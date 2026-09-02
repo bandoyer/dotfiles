@@ -1,0 +1,18 @@
+[tools]
+aspire = "latest"
+babashka = "latest"
+claude = "latest"
+codex = "latest"
+dotnet = "latest"
+gh = "latest"
+node = "26.7.0"
+"npm:@xai-official/grok" = "latest"
+"npm:playwright" = "latest"
+python = "latest"
+ruby = "latest"
+
+[settings]
+idiomatic_version_file_enable_tools = ["ruby"]
+
+[settings.ruby]
+compile = false

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "dlb.audio-output",
+  "name": "Audio Output Toggle",
+  "version": "1.0.0",
+  "author": "dlb",
+  "license": "MIT",
+  "description": "Switch ASM's EQ-processed Game, Chat, and Media channels between Arena 7 speakers and Arctis headphones.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Audio Output Toggle",
+    "description": "One-click output switching while preserving Arctis Sound Manager EQ routing.",
+    "category": "Audio",
+    "aliases": [
+      "audio-output",
+      "arena",
+      "arctis"
+    ],
+    "allowMultiple": false
+  }
+}

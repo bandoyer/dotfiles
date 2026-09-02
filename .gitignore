@@ -1,0 +1,23 @@
+*.bak
+*.tmp
+*~
+
+# Local audit output
+.gitleaks-report*
+
+# Common credential-bearing paths if they are accidentally copied into the
+# Chezmoi source state. This list is defense in depth, not exhaustive.
+dot_ssh/
+dot_config/1Password/
+dot_config/chezmoi/chezmoi.toml
+dot_config/doctl/config.yaml
+dot_config/gh/hosts.yml
+dot_config/glab-cli/config.yml
+dot_config/op/
+dot_claude.json*
+dot_claude/**/*credentials*
+dot_codex/**/*auth*.json*
+dot_grok/**/*auth*.json*
+**/.env
+**/*.key
+**/*.pem

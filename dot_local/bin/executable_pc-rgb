@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  pc-rgb off             Turn all supported PC lighting off
+  pc-rgb on [RRGGBB]     Turn all supported PC lighting on (default: FFFFFF)
+  pc-rgb --dry-run ...   Show the OpenRGB commands without changing any lights
+
+Examples:
+  pc-rgb off
+  pc-rgb on
+  pc-rgb on 7AA2F7
+EOF
+}
+
+dry_run=0
+if [[ ${1:-} == --dry-run ]]; then
+  dry_run=1
+  shift
+fi
+
+action="${1:-}"
+case "$action" in
+  help|-h|--help)
+    usage
+    exit 0
+    ;;
+  on|off)
+    shift
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+color=FFFFFF
+if [[ $action == on ]]; then
+  color="${1:-FFFFFF}"
+  color="${color#\#}"
+  color="${color^^}"
+  shift $(( $# > 0 ? 1 : 0 ))
+
+  if [[ ! $color =~ ^[0-9A-F]{6}$ ]]; then
+    printf 'pc-rgb: color must be a six-digit RGB hex value, such as 7AA2F7\n' >&2
+    exit 2
+  fi
+fi
+
+if (( $# > 0 )); then
+  usage >&2
+  exit 2
+fi
+
+for dependency in jq openrgb; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    printf 'pc-rgb: required command not found: %s\n' "$dependency" >&2
+    exit 1
+  fi
+done
+
+source_config="${OPENRGB_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/OpenRGB/OpenRGB.json}"
+if [[ ! -r $source_config ]]; then
+  printf 'pc-rgb: OpenRGB config not found: %s\n' "$source_config" >&2
+  exit 1
+fi
+
+runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/pc-rgb.XXXXXX")"
+cleanup() {
+  [[ -n ${runtime_dir:-} ]] || return
+  rm -f -- "$runtime_dir/OpenRGB.json"
+  rmdir -- "$runtime_dir" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# OpenRGB currently crashes on this machine when every detector runs in
+# parallel. Keep only the detectors for hardware known to be installed.
+jq '
+  .Detectors.detectors |= with_entries(
+    .value = (
+      .key as $detector
+      | [
+          "ENE SMBus DRAM",
+          "MSI Mystic Light X870",
+          "Nvidia NvAPI Illumination",
+          "SteelSeries Aerox 5 Wireless",
+          "SteelSeries Apex Pro TKL Gen 3 Wireless"
+        ]
+      | index($detector) != null
+    )
+  )
+' "$source_config" > "$runtime_dir/OpenRGB.json"
+
+run_openrgb() {
+  if (( dry_run )); then
+    printf 'DRY RUN:'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+if [[ $action == off ]]; then
+  run_openrgb openrgb --config "$runtime_dir" --mode Direct --color 000000
+  run_openrgb openrgb --config "$runtime_dir" \
+    --device 'NVIDIA GeForce RTX 5090 FE' --mode Off
+  (( dry_run )) || printf 'All supported PC RGB lights are off.\n'
+else
+  run_openrgb openrgb --config "$runtime_dir" --mode Direct --color "$color"
+  (( dry_run )) || printf 'All supported PC RGB lights are on (#%s).\n' "$color"
+fi

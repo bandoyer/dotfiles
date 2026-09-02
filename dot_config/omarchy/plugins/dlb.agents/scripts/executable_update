@@ -1,0 +1,66 @@
+#!/bin/bash
+
+set -uo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+usage_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
+
+flags=()
+only=()
+local_agents=(claude codex grok)
+declare -A excluded
+
+while (( $# > 0 )); do
+  case "$1" in
+  --force | --limits-only)
+    flags+=("$1")
+    ;;
+  --except)
+    if (( $# < 2 )); then
+      echo "dlb.agents update: --except needs an agent id" >&2
+      exit 1
+    fi
+    excluded[$2]=1
+    shift
+    ;;
+  *)
+    only+=("$1")
+    ;;
+  esac
+  shift
+done
+
+local_wanted() {
+  local agent="$1" candidate
+  [[ -n ${excluded[$agent]:-} ]] && return 1
+  (( ${#only[@]} == 0 )) && return 0
+  for candidate in "${only[@]}"; do
+    [[ $candidate == "$agent" ]] && return 0
+  done
+  return 1
+}
+
+collect_local() {
+  local agent="$1" record tmp
+  mkdir -p "$usage_dir"
+  umask 077
+  if ! record=$("$script_dir/omarchy-agent-usage-$agent" "${flags[@]}") || [[ -z $record ]]; then
+    echo "dlb.agents update: $agent collector failed" >&2
+    return 1
+  fi
+  if ! jq -e --arg agent "$agent" '.id == $agent and .schemaVersion == 1' >/dev/null 2>&1 <<<"$record"; then
+    echo "dlb.agents update: $agent collector returned an invalid record" >&2
+    return 1
+  fi
+  tmp=$(mktemp "$usage_dir/.$agent.XXXXXX")
+  printf '%s\n' "$record" >"$tmp"
+  mv "$tmp" "$usage_dir/$agent.json"
+}
+
+status=0
+for agent in "${local_agents[@]}"; do
+  local_wanted "$agent" || continue
+  collect_local "$agent" || status=1
+done
+
+exit "$status"

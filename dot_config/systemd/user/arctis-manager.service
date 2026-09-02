@@ -1,0 +1,15 @@
+[Unit]
+Description=Arctis Sound Manager
+After=pipewire.service pipewire-pulse.service filter-chain.service
+Wants=pipewire.service filter-chain.service
+StartLimitInterval=1min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/asm-daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

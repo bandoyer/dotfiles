@@ -1,0 +1,32 @@
+-- See https://wiki.hypr.land/Configuring/Basics/Monitors/
+-- List current monitors and supported resolutions with: hyprctl monitors all
+
+local omarchy_gdk_scale = 2
+local omarchy_monitor_scale = 1.6
+local omarchy_home = os.getenv("HOME") or ""
+local omarchy_icc_profile = omarchy_home .. "/.local/share/color/icc/PG32UCDM-Standard.icm"
+local omarchy_icc_file = io.open(omarchy_icc_profile, "r")
+
+if omarchy_icc_file then
+  omarchy_icc_file:close()
+else
+  omarchy_icc_profile = nil
+end
+
+hl.env("GDK_SCALE", tostring(omarchy_gdk_scale))
+hl.monitor({ output = "", mode = "preferred", position = "auto", scale = omarchy_monitor_scale })
+
+-- SpectraCal SDR profile for the ASUS PG32UCDM.
+hl.monitor({
+  output = "DP-1",
+  mode = "preferred",
+  position = "auto",
+  scale = omarchy_monitor_scale,
+  icc = omarchy_icc_profile,
+})
+
+-- Configure a specific monitor.
+-- hl.monitor({ output = "DP-2", mode = "2560x1440@144", position = "0x0", scale = 1 })
+
+-- Portrait/rotated secondary monitor (transform: 1 = 90°, 3 = 270°).
+-- hl.monitor({ output = "DP-2", mode = "preferred", position = "auto", scale = 1, transform = 1 })

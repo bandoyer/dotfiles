@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "dlb.rgb",
+  "name": "MSI 7E49 RGB Studio",
+  "version": "1.2.2",
+  "author": "dlb",
+  "license": "MIT",
+  "description": "Guarded motherboard and RAM lighting controls for the validated MSI MS-7E49 OpenRGB build.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "MSI 7E49 RGB Studio",
+    "description": "Sync or separate device colors, a visual picker, recent colors, favorites, night mode, and selectable bar icons.",
+    "category": "Hardware",
+    "aliases": [
+      "rgb",
+      "openrgb",
+      "lighting",
+      "msi"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

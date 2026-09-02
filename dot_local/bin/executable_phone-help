@@ -1,0 +1,38 @@
+#!/bin/bash
+# Quick reference for remoting into this machine from the iPhone.
+# Works from any shell — including a Blink session on the phone itself.
+
+readonly remote_host="${PHONE_REMOTE_HOST:-omarchy}"
+readonly phone_device="${TAILSCALE_PHONE_DEVICE:-iphone}"
+
+cat <<EOF
+PHONE REMOTE CHEATSHEET — ${remote_host} over Tailscale
+Tailscale must be connected on the phone. Key-only SSH (passwords disabled).
+
+CONNECT (Blink)
+  mosh ${remote_host}                  persistent session; survives sleep/network hops
+  ssh ${remote_host}                   plain SSH — use for tunnels, scp/sftp
+
+HERDR SWARMS (agents keep running with nobody attached)
+  herdr agent list                              status of every agent
+  herdr agent read <name> --lines 40            recent output from one agent
+  herdr agent prompt <name> "do the thing"      send a prompt without attaching
+  herdr agent wait <name> --until blocked --until done
+                                                block until it needs you (mosh-safe)
+  herdr agent attach <name>                     take over one agent's terminal
+                                                (--takeover if another client holds it)
+  herdr                                         full TUI, same session as desktop
+
+TMUX (general shells with scrollback)
+  tmux new -As main             attach-or-create the "main" session
+  swipe up                      scroll history      C-Space [   copy mode (q quits)
+  C-Space d                     detach              C-Space ?   full cheat sheet
+
+FULL DESKTOP
+  Moonlight app -> Desktop      streams Hyprland via Sunshine
+  Sunshine admin: https://localhost:47990 (on this machine)
+
+FILE DROP
+  Phone share sheet -> Tailscale -> ${remote_host}     lands in ~/Downloads
+  omarchy tailscale send ${phone_device} <file>   this machine -> phone
+EOF

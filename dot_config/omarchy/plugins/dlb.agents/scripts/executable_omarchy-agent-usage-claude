@@ -1,0 +1,287 @@
+#!/usr/bin/python3
+# omarchy:summary=Print the Claude usage record with subscription metadata
+"""Enrich Omarchy's packaged Claude collector with subscription state."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+from subscription_utils import (
+  cache_path,
+  read_cache,
+  read_json,
+  run_packaged_collector,
+  subscription,
+  write_cache,
+)
+
+
+PROFILE_ENDPOINT = "https://api.anthropic.com/api/oauth/profile"
+SUBSCRIPTION_DETAILS_ENDPOINT = "https://api.anthropic.com/api/organizations/{organization}/subscription_details"
+CACHE_SECONDS = 15 * 60
+CHROME_EPOCH_OFFSET_SECONDS = 11_644_473_600
+
+
+def config_dir() -> Path:
+  return Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")).expanduser()
+
+
+def credentials() -> dict[str, Any]:
+  root = read_json(config_dir() / ".credentials.json")
+  oauth = root.get("claudeAiOauth")
+  return oauth if isinstance(oauth, dict) else {}
+
+
+def fetch_profile(access_token: str) -> dict[str, Any]:
+  request = urllib.request.Request(
+    PROFILE_ENDPOINT,
+    headers={
+      "Authorization": "Bearer " + access_token,
+      "Accept": "application/json",
+      "Cache-Control": "no-cache",
+      "User-Agent": "omarchy-agent-usage/1",
+    },
+  )
+  with urllib.request.urlopen(request, timeout=12) as response:
+    payload = json.load(response)
+  if not isinstance(payload, dict):
+    return {}
+  organization = payload.get("organization")
+  if not isinstance(organization, dict):
+    return {}
+  # Cache only the non-identifying fields needed to render subscription state.
+  return {
+    "billingType": str(organization.get("billing_type") or ""),
+    "organizationType": str(organization.get("organization_type") or ""),
+    "subscriptionStatus": str(organization.get("subscription_status") or ""),
+  }
+
+
+def cached_profile(oauth: dict[str, Any], force: bool) -> dict[str, Any]:
+  path = cache_path("claude-subscription-profile.json")
+  if not force:
+    fresh = read_cache(path, CACHE_SECONDS)
+    profile = fresh.get("profile")
+    if isinstance(profile, dict):
+      return profile
+
+  token = str(oauth.get("accessToken") or "")
+  if token:
+    try:
+      profile = fetch_profile(token)
+      if profile:
+        write_cache(path, {"fetchedAt": time.time(), "profile": profile})
+        return profile
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+      pass
+
+  stale = read_cache(path)
+  profile = stale.get("profile")
+  return profile if isinstance(profile, dict) else {}
+
+
+def organization_uuid() -> str:
+  config = read_json(Path.home() / ".claude.json")
+  account = config.get("oauthAccount") if isinstance(config.get("oauthAccount"), dict) else {}
+  return str(account.get("organizationUuid") or "")
+
+
+def browser_cookie_databases() -> list[tuple[Path, str]]:
+  configured = os.environ.get("CLAUDE_BROWSER_COOKIE_DB")
+  if configured:
+    application = os.environ.get("CLAUDE_BROWSER_SAFE_STORAGE_APP") or "chromium"
+    return [(Path(configured).expanduser(), application)]
+  return [
+    (Path.home() / ".config/chromium/Default/Cookies", "chromium"),
+    (Path.home() / ".config/google-chrome/Default/Cookies", "chrome"),
+  ]
+
+
+def decrypt_chromium_cookie(host: str, encrypted: bytes, application: str) -> str:
+  # Modern Linux Chromium cookies use AES-128-CBC with a key derived from the
+  # browser's Safe Storage secret. Request only that one secret, keep it and
+  # the cookie in memory, and never pass either through argv or the filesystem.
+  if not encrypted.startswith(b"v11") or len(encrypted) <= 3:
+    return ""
+  try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    secret = subprocess.run(
+      ["secret-tool", "lookup", "application", application],
+      check=True,
+      capture_output=True,
+      timeout=4,
+    ).stdout.rstrip(b"\n")
+    if not secret:
+      return ""
+    key = hashlib.pbkdf2_hmac("sha1", secret, b"saltysalt", 1, 16)
+    decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
+    plaintext = decryptor.update(encrypted[3:]) + decryptor.finalize()
+  except (ImportError, OSError, subprocess.SubprocessError, ValueError):
+    return ""
+
+  padding = plaintext[-1] if plaintext else 0
+  if padding < 1 or padding > 16 or plaintext[-padding:] != bytes([padding]) * padding:
+    return ""
+  plaintext = plaintext[:-padding]
+
+  # Cookie DB schema version 24+ prepends SHA-256(host_key) before encryption.
+  host_digest = hashlib.sha256(host.encode()).digest()
+  if plaintext.startswith(host_digest):
+    plaintext = plaintext[len(host_digest):]
+  try:
+    value = plaintext.decode()
+  except UnicodeDecodeError:
+    return ""
+  return value if value.startswith("sk-ant-") else ""
+
+
+def claude_session_cookie() -> tuple[str, str]:
+  chrome_now = int((time.time() + CHROME_EPOCH_OFFSET_SECONDS) * 1_000_000)
+  query = """
+    SELECT host_key, name, value, encrypted_value
+    FROM cookies
+    WHERE host_key IN ('.claude.ai', 'claude.ai')
+      AND name IN ('sessionKeyV3', 'sessionKey')
+      AND (expires_utc = 0 OR expires_utc > ?)
+    ORDER BY CASE name WHEN 'sessionKeyV3' THEN 0 ELSE 1 END,
+             last_update_utc DESC
+  """
+  for path, application in browser_cookie_databases():
+    if not path.is_file():
+      continue
+    try:
+      with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1) as database:
+        rows = database.execute(query, (chrome_now,)).fetchall()
+    except sqlite3.Error:
+      continue
+    for host, name, plain, encrypted in rows:
+      value = str(plain or "")
+      if not value:
+        value = decrypt_chromium_cookie(str(host), bytes(encrypted or b""), application)
+      if value.startswith("sk-ant-"):
+        return str(name), value
+  return "", ""
+
+
+def fetch_subscription_details(organization: str, cookie_name: str, cookie_value: str) -> dict[str, Any]:
+  endpoint = SUBSCRIPTION_DETAILS_ENDPOINT.format(
+    organization=urllib.parse.quote(organization, safe=""),
+  )
+  request = urllib.request.Request(
+    endpoint,
+    headers={
+      "Cookie": cookie_name + "=" + cookie_value,
+      "Accept": "application/json",
+      "Cache-Control": "no-cache",
+      "Origin": "https://claude.ai",
+      "Referer": "https://claude.ai/settings/billing",
+      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
+    },
+  )
+  with urllib.request.urlopen(request, timeout=12) as response:
+    payload = json.load(response)
+  return payload if isinstance(payload, dict) else {}
+
+
+def subscription_from_details(details: dict[str, Any]) -> dict[str, Any]:
+  raw_status = str(details.get("status") or "").strip().lower()
+  if raw_status in {"active", "trialing"}:
+    status = "active"
+  elif raw_status:
+    status = "inactive"
+  else:
+    status = "unknown"
+
+  ends_at = str(details.get("plan_ending_at") or details.get("plan_ending_before") or "")
+  renews_at = str(details.get("next_charge_at") or details.get("next_charge_date") or "")
+  cancel_at_period_end = status == "active" and bool(ends_at)
+  return subscription(
+    status,
+    renews_at=renews_at,
+    ends_at=ends_at,
+    cancel_at_period_end=cancel_at_period_end,
+    source="anthropic-subscription-details",
+  )
+
+
+def subscription_from_profile(
+  profile: dict[str, Any],
+  oauth: dict[str, Any],
+) -> dict[str, Any]:
+  raw_status = str(profile.get("subscriptionStatus") or "").strip().lower()
+  if raw_status in {"active", "trialing"}:
+    status = "active"
+  elif raw_status:
+    status = "inactive"
+  else:
+    # Claude's saved subscriptionType is a useful offline fallback, but it
+    # carries no billing-period end and therefore never invents a date.
+    status = "active" if str(oauth.get("subscriptionType") or "").strip() else "inactive"
+
+  # The OAuth profile proves whether access is currently active, but its plan
+  # creation timestamp is neither the billing date nor the current period end.
+  return subscription(status, source="anthropic-profile" if profile else "claude-credentials")
+
+
+def claude_subscription(profile: dict[str, Any], oauth: dict[str, Any], force: bool) -> dict[str, Any]:
+  fallback = subscription_from_profile(profile, oauth)
+  organization = organization_uuid()
+  if not organization:
+    return fallback
+
+  account_key = hashlib.sha256(organization.encode()).hexdigest()[:16]
+  path = cache_path("claude-subscription.json")
+  if not force:
+    fresh = read_cache(path, CACHE_SECONDS)
+    value = fresh.get("subscription")
+    if fresh.get("accountKey") == account_key and isinstance(value, dict):
+      return value
+
+  cookie_name, cookie_value = claude_session_cookie()
+  if cookie_value:
+    try:
+      value = subscription_from_details(
+        fetch_subscription_details(organization, cookie_name, cookie_value),
+      )
+      if value.get("status") != "unknown":
+        # Cache only the derived display record. The browser session cookie and
+        # organization UUID never leave this process.
+        write_cache(path, {
+          "accountKey": account_key,
+          "fetchedAt": time.time(),
+          "subscription": value,
+        })
+        return value
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+      pass
+
+  stale_entry = read_cache(path)
+  stale = stale_entry.get("subscription")
+  return stale if stale_entry.get("accountKey") == account_key and isinstance(stale, dict) else fallback
+
+
+def main() -> int:
+  args = sys.argv[1:]
+  record = run_packaged_collector("claude", args)
+  oauth = credentials()
+  force = "--force" in args
+  profile = cached_profile(oauth, force)
+  record["subscription"] = claude_subscription(profile, oauth, force)
+  print(json.dumps(record, separators=(",", ":"), sort_keys=True))
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())

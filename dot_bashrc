@@ -1,0 +1,38 @@
+# Omarchy environment (OMARCHY_PATH + PATH), needed even for non-interactive shells
+[[ -r /usr/share/omarchy/default/bash/env-bootstrap ]] && source /usr/share/omarchy/default/bash/env-bootstrap
+
+# If not running interactively, don't do anything else (leave this above the rc source)
+[[ $- != *i* ]] && return
+
+# All the default Omarchy aliases and functions
+# (don't mess with these directly, just overwrite them here!)
+source "$OMARCHY_PATH/default/bash/rc"
+
+# Add your own exports, aliases, and functions here.
+#
+# Make an alias for invoking commands you use constantly
+# alias p='python'
+
+# .NET global tools (crap4net, dotnet-stryker, ...)
+export PATH="$PATH:$HOME/.dotnet/tools"
+
+. "$HOME/.local/share/../bin/env"
+
+# Personal command recipe palette (Alt-S)
+[[ -r "$HOME/.local/share/cmds/bash-integration.bash" ]] && source "$HOME/.local/share/cmds/bash-integration.bash"
+
+# >>> Codex installer >>>
+export PATH="$HOME/.local/bin:$PATH"
+# <<< Codex installer <<<
+
+# Keep `cy` sessions on the shared Codex Remote host so they can be continued
+# from this terminal, ChatGPT Remote on mobile, or another supported client.
+# Match Omarchy's stock `cy` safety model: workspace-write with auto-review.
+unalias cy 2>/dev/null
+cy() {
+  local codex_remote_home="$HOME/.codex-remote-lab"
+
+  CODEX_HOME="$codex_remote_home" codex remote-control start --json >/dev/null || return
+  CODEX_HOME="$codex_remote_home" codex --remote unix:// \
+    --approve-for-me -C "$PWD" "$@"
+}

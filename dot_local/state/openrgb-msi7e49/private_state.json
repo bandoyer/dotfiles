@@ -1,0 +1,11 @@
+{
+  "motherboard": "AB0915",
+  "ram": "AB0915",
+  "savedMotherboard": "AB0915",
+  "savedRam": "AB0915",
+  "lightsOn": true,
+  "syncEnabled": true,
+  "lastAction": "power-on",
+  "updatedAt": "2026-08-31T12:59:33-04:00",
+  "source": "omarchy-plugin"
+}

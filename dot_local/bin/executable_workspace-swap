@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly maximum_workspace_id=2147483647
+
+usage() {
+  cat <<'EOF'
+Usage:
+  workspace-swap FROM TO
+
+Swap two numbered Hyprland workspaces by exchanging their workspace IDs. This
+keeps each workspace's windows and tiling layout together.
+
+Examples:
+  workspace-swap 2 1
+  workspace-swap 7 3
+EOF
+}
+
+if [[ ${1:-} == help || ${1:-} == -h || ${1:-} == --help ]]; then
+  usage
+  exit 0
+fi
+
+if (( $# != 2 )); then
+  usage >&2
+  exit 2
+fi
+
+valid_workspace_number() {
+  local value="$1"
+
+  [[ $value =~ ^[1-9][0-9]{0,9}$ ]] && (( 10#$value <= maximum_workspace_id ))
+}
+
+if ! valid_workspace_number "$1" || ! valid_workspace_number "$2"; then
+  printf 'workspace-swap: FROM and TO must be workspace numbers from 1 to %d\n' \
+    "$maximum_workspace_id" >&2
+  exit 2
+fi
+
+first_workspace=$((10#$1))
+second_workspace=$((10#$2))
+
+if (( first_workspace == second_workspace )); then
+  printf 'workspace-swap: FROM and TO must be different workspaces\n' >&2
+  exit 2
+fi
+
+for dependency in hyprctl jq; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    printf 'workspace-swap: required command not found: %s\n' "$dependency" >&2
+    exit 1
+  fi
+done
+
+if ! workspaces_json="$(hyprctl workspaces -j)"; then
+  printf 'workspace-swap: could not query Hyprland; run this inside your Omarchy desktop session\n' >&2
+  exit 1
+fi
+
+first_count="$(
+  jq -r --argjson workspace "$first_workspace" \
+    '[.[] | select(.id == $workspace) | .windows][0] // empty' <<<"$workspaces_json"
+)"
+second_count="$(
+  jq -r --argjson workspace "$second_workspace" \
+    '[.[] | select(.id == $workspace) | .windows][0] // empty' <<<"$workspaces_json"
+)"
+
+if [[ -z $first_count && -z $second_count ]]; then
+  printf 'workspace-swap: workspaces %d and %d do not currently exist\n' \
+    "$first_workspace" "$second_workspace" >&2
+  exit 1
+fi
+
+if ! swap_result="$(
+  hyprctl eval "
+local first_id = $first_workspace
+local second_id = $second_workspace
+local first = hl.get_workspace(first_id)
+local second = hl.get_workspace(second_id)
+local active = hl.get_active_workspace()
+local active_id = active and active.id or nil
+
+if not first and not second then
+    error(string.format('workspaces %d and %d do not exist', first_id, second_id))
+end
+
+if first and second then
+    local used_ids = {}
+    for _, workspace in pairs(hl.get_workspaces()) do
+        if workspace.id > 0 then
+            used_ids[workspace.id] = true
+        end
+    end
+
+    local temporary_id = $maximum_workspace_id
+    while temporary_id > 0 and used_ids[temporary_id] do
+        temporary_id = temporary_id - 1
+    end
+    if temporary_id == 0 then
+        error('no temporary workspace ID is available')
+    end
+
+    hl.dispatch(hl.dsp.workspace.change_id({ workspace = first, id = temporary_id }))
+    hl.dispatch(hl.dsp.workspace.change_id({ workspace = second, id = first_id }))
+    hl.dispatch(hl.dsp.workspace.change_id({ workspace = first, id = second_id }))
+elseif first then
+    hl.dispatch(hl.dsp.workspace.change_id({ workspace = first, id = second_id }))
+else
+    hl.dispatch(hl.dsp.workspace.change_id({ workspace = second, id = first_id }))
+end
+
+if active_id == first_id then
+    hl.dispatch(hl.dsp.focus({ workspace = second_id }))
+elseif active_id == second_id then
+    hl.dispatch(hl.dsp.focus({ workspace = first_id }))
+end
+" 2>&1
+)"; then
+  printf 'workspace-swap: Hyprland could not swap workspaces %d and %d\n' \
+    "$first_workspace" "$second_workspace" >&2
+  printf '%s\n' "$swap_result" >&2
+  exit 1
+fi
+
+printf 'Swapped workspace %d (%s window(s)) with workspace %d (%s window(s)).\n' \
+  "$first_workspace" "${first_count:-0}" \
+  "$second_workspace" "${second_count:-0}"

@@ -1,0 +1,83 @@
+-- Keep only your personal input overrides here. Uncommented settings below
+-- replace Omarchy's defaults.
+
+-- Keyboard layout and options.
+-- See https://wiki.hypr.land/Configuring/Basics/Variables/#input
+-- hl.config({
+--   input = {
+--     -- Use multiple keyboard layouts and switch between them with Left Alt + Right Alt.
+--     kb_layout = "us,dk,eu",
+--     kb_options = "compose:caps,shift:both_capslock_cancel,grp:alts_toggle",
+--
+--     -- Use a specific keyboard variant if needed (e.g. intl for international keyboards).
+--     kb_variant = "intl",
+--
+--     -- Change speed of keyboard repeat.
+--     repeat_rate = 40,
+--     repeat_delay = 250,
+--
+--     -- Start with numlock on by default.
+--     numlock_by_default = true,
+--
+--     -- Increase sensitivity for mouse/trackpad (default: 0).
+--     sensitivity = 0.35,
+--
+--     -- Turn off mouse acceleration (default: adaptive).
+--     accel_profile = "flat",
+--
+--     touchpad = {
+--       -- Use natural (inverse) scrolling.
+--       natural_scroll = true,
+--
+--       -- Use two-finger clicks for right-click instead of lower-right corner.
+--       clickfinger_behavior = true,
+--
+--       -- Control the speed of your scrolling.
+--       scroll_factor = 0.4,
+--
+--       -- Enable the touchpad while typing.
+--       disable_while_typing = false,
+--
+--       -- Left-click-and-drag with three fingers.
+--       drag_3fg = 1,
+--     },
+--   },
+-- })
+
+-- App-specific touchpad scroll speeds.
+-- o.window("(Alacritty|kitty|foot)", { scroll_touchpad = 1.5 })
+-- o.window("com.mitchellh.ghostty", { scroll_touchpad = 0.2 })
+
+-- Enable touchpad gestures for changing workspaces.
+-- See https://wiki.hypr.land/Configuring/Advanced-and-Cool/Gestures/
+-- hl.gesture({ fingers = 3, direction = "horizontal", action = "workspace" })
+
+-- Enable touchpad gestures for moving focus (helpful on scrolling layout).
+-- hl.gesture({ fingers = 3, direction = "left", action = function() hl.dispatch(hl.dsp.focus({ direction = "l" })) end })
+-- hl.gesture({ fingers = 3, direction = "right", action = function() hl.dispatch(hl.dsp.focus({ direction = "r" })) end })
+
+-- Keyboard repeat delay.
+--
+-- Omarchy's default is 250ms (see /usr/share/omarchy/default/hypr/input.lua).
+-- That collides with the 250ms tapping term on the ZSA Voyager's home-row
+-- layer-tap keys (A/S/D/F -> layers 5/2/3/4). When QMK's Flow Tap (100ms)
+-- settles one of those keys as a plain tap, the keycode is held for as long as
+-- the key is physically down -- so lingering on it past 250ms triggers repeat
+-- and emits a burst of duplicate characters at repeat_rate.
+--
+-- 600ms is the Hyprland default, and matches the ~500ms used by Windows and
+-- GNOME, where the duplicates never appeared. repeat_rate is left at Omarchy's
+-- 40 so deliberate held-key repeats (backspace, arrows) stay fast.
+hl.config({
+  input = {
+    repeat_delay = 600,
+  },
+})
+
+-- Input Remapper routes the SlimBlade Pro's bottom-left and top-left buttons
+-- through this virtual mouse as left and right click. Let libinput turn their
+-- simultaneous press into a middle click while suppressing both normal clicks.
+hl.device({
+  name = "input-remapper-mouse",
+  middle_button_emulation = true,
+})

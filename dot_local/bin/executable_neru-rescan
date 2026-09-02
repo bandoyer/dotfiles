@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly neru_unit="neru.service"
+
+# Release an active keyboard grab before replacing the daemon when IPC still works.
+/usr/bin/neru idle >/dev/null 2>&1 || true
+
+# Neru 1.51.0 reports a completed graceful shutdown but does not exit, leaving a
+# normal restart blocked until systemd's 90-second timeout. Killing only the
+# daemon lets its Restart=on-failure policy bring up a fresh device scan.
+if /usr/bin/systemctl --user is-active --quiet "$neru_unit"; then
+  /usr/bin/systemctl --user kill --kill-whom=main --signal=SIGKILL "$neru_unit"
+else
+  /usr/bin/systemctl --user start "$neru_unit"
+fi
+
+for ((neru_attempt = 0; neru_attempt < 100; neru_attempt++)); do
+  if /usr/bin/neru status >/dev/null 2>&1; then
+    /usr/bin/neru status
+    exit 0
+  fi
+  /usr/bin/sleep 0.1
+done
+
+printf 'neru-rescan: Neru did not become ready after 10 seconds\n' >&2
+/usr/bin/systemctl --user status "$neru_unit" --no-pager >&2 || true
+exit 1

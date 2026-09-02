@@ -1,0 +1,1135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly openrgb_bin="$HOME/.local/opt/openrgb-msi7e49/81a80d8a0/openrgb"
+readonly expected_sha256="ea8e2d416528fb9044e3a5f1e7944d61c91e4c2402690a6952605644a1024734"
+readonly combined_config="$HOME/.config/openrgb-msi7e49"
+readonly motherboard_config="$HOME/.config/openrgb-msi7e49-motherboard"
+readonly ram_config="$HOME/.config/openrgb-msi7e49-ram"
+readonly state_file="$HOME/.local/state/openrgb-msi7e49/state.json"
+readonly lock_file="$HOME/.local/state/openrgb-msi7e49/control.lock"
+readonly theme_sync_file="$HOME/.local/state/openrgb-msi7e49/theme-sync.json"
+readonly theme_sync_lock_file="$HOME/.local/state/openrgb-msi7e49/theme-sync.lock"
+readonly last_log="$HOME/.local/state/openrgb-msi7e49/last-openrgb.log"
+readonly current_theme_name_file="$HOME/.local/state/omarchy/current/theme.name"
+readonly current_theme_colors_file="$HOME/.local/state/omarchy/current/theme/colors.toml"
+readonly current_background_link="$HOME/.local/state/omarchy/current/background"
+readonly theme_sync_default='{"version":1,"enabled":false,"armed":false,"paletteSource":"theme","wallpaper":"","theme":"","motherboard":"","ram":"","mapping":"","status":"disabled","message":"","lastAppliedKey":"","updatedAt":""}'
+
+if ! command -v jq >/dev/null 2>&1; then
+    printf '{"ok":false,"message":"jq is required"}\n'
+    exit 69
+fi
+
+emit_error() {
+    local message="$1"
+    local code="${2:-1}"
+    jq -cn --arg message "$message" '{ok: false, message: $message}'
+    exit "$code"
+}
+
+validate_state() {
+    [[ -r "$state_file" ]] || emit_error "RGB state file is missing."
+    jq -e '
+        (.motherboard | type == "string" and test("^[0-9A-F]{6}$"))
+        and (.ram | type == "string" and test("^[0-9A-F]{6}$"))
+        and ((.savedMotherboard // .motherboard) | type == "string" and test("^[0-9A-F]{6}$"))
+        and ((.savedRam // .ram) | type == "string" and test("^[0-9A-F]{6}$"))
+        and ((if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end) | type == "boolean")
+        and ((if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end) | type == "boolean")
+    ' "$state_file" >/dev/null || emit_error "RGB state file is invalid."
+}
+
+load_theme_sync() {
+    local normalized
+
+    if [[ ! -e "$theme_sync_file" ]]; then
+        printf '%s\n' "$theme_sync_default"
+        return
+    fi
+
+    [[ -r "$theme_sync_file" ]] || emit_error "Theme-sync state is not readable."
+    normalized="$(jq -c '. + {
+        paletteSource: (.paletteSource // "theme"),
+        wallpaper: (.wallpaper // "")
+    }' "$theme_sync_file")" || emit_error "Theme-sync state is invalid."
+    jq -ce '
+        (.version == 1)
+        and (.enabled | type == "boolean")
+        and (.armed | type == "boolean")
+        and (.paletteSource == "theme" or .paletteSource == "wallpaper")
+        and (.wallpaper | type == "string")
+        and (.theme | type == "string")
+        and (.motherboard | type == "string" and test("^$|^[0-9A-F]{6}$"))
+        and (.ram | type == "string" and test("^$|^[0-9A-F]{6}$"))
+        and (.mapping | type == "string")
+        and (.status | type == "string")
+        and (.message | type == "string")
+        and (.lastAppliedKey | type == "string")
+        and (.updatedAt | type == "string")
+    ' <<<"$normalized" >/dev/null || emit_error "Theme-sync state is invalid."
+    printf '%s\n' "$normalized"
+}
+
+emit_state() {
+    local message="$1"
+    local theme_sync
+    validate_state
+    theme_sync="$(load_theme_sync)"
+    jq -c --arg message "$message" --argjson themeSync "$theme_sync" '
+        . as $state
+        | . + {
+            savedMotherboard: ($state.savedMotherboard // $state.motherboard),
+            savedRam: ($state.savedRam // $state.ram),
+            lightsOn: (if ($state | has("lightsOn")) then $state.lightsOn else (($state.motherboard != "000000") or ($state.ram != "000000")) end),
+            syncEnabled: (if ($state | has("syncEnabled")) then $state.syncEnabled else ($state.motherboard == $state.ram) end),
+            themeSync: $themeSync,
+            ok: true,
+            message: $message
+        }
+    ' "$state_file"
+}
+
+normalize_color() {
+    local color="${1:-}"
+    color="${color#\#}"
+    color="${color^^}"
+    [[ "$color" =~ ^[0-9A-F]{6}$ ]] || return 1
+    printf '%s' "$color"
+}
+
+current_theme_name() {
+    local theme
+
+    [[ -r "$current_theme_name_file" ]] || emit_error "Omarchy current theme name is unavailable."
+    theme="$(tr -d '\r\n' <"$current_theme_name_file")"
+    [[ -n "$theme" && "$theme" != .* && "$theme" != */* ]] \
+        || emit_error "Omarchy current theme name is invalid."
+    printf '%s' "$theme"
+}
+
+theme_color() {
+    local key="$1"
+    local line
+    local pattern="^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[\"']#([0-9A-Fa-f]{6})[\"']"
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ $pattern ]]; then
+            printf '%s' "${BASH_REMATCH[1]^^}"
+            return
+        fi
+    done <"$current_theme_colors_file"
+
+    return 1
+}
+
+wallpaper_palette() {
+    local wallpaper="$1"
+    local palette
+    local primary
+    local secondary
+
+    command -v magick >/dev/null 2>&1 || emit_error "ImageMagick is required for wallpaper palette sync."
+    [[ -f "$wallpaper" && -r "$wallpaper" ]] || emit_error "The current Omarchy wallpaper is not readable."
+
+    palette="$(
+        magick "${wallpaper}[0]" \
+            -auto-orient \
+            -resize '160x90!' \
+            -alpha off \
+            -colorspace sRGB \
+            -depth 8 \
+            -colors 16 \
+            -format %c histogram:info:- |
+        awk '
+            function max3(a,b,c) { return a>b ? (a>c?a:c) : (b>c?b:c) }
+            function min3(a,b,c) { return a<b ? (a<c?a:c) : (b<c?b:c) }
+            function hue(r,g,b, maximum,minimum,delta,result) {
+                maximum=max3(r,g,b); minimum=min3(r,g,b); delta=maximum-minimum
+                if (delta == 0) return 0
+                if (maximum == r) result=60*((g-b)/delta)
+                else if (maximum == g) result=60*(((b-r)/delta)+2)
+                else result=60*(((r-g)/delta)+4)
+                if (result < 0) result += 360
+                return result
+            }
+            function hue_distance(a,b,distance) {
+                distance=a-b
+                if (distance < 0) distance=-distance
+                return distance>180 ? 360-distance : distance
+            }
+            {
+                count=$1
+                sub(/:$/, "", count)
+                if (!match($0, /#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/)) next
+                color=substr($0,RSTART+1,6)
+                if (!match($0, /\(([0-9.]+),([0-9.]+),([0-9.]+)\)/, channels)) next
+
+                total++
+                counts[total]=count+0
+                reds[total]=channels[1]+0
+                greens[total]=channels[2]+0
+                blues[total]=channels[3]+0
+                colors[total]=toupper(color)
+                maximum=max3(reds[total],greens[total],blues[total])
+                minimum=min3(reds[total],greens[total],blues[total])
+                values[total]=maximum/255
+                saturations[total]=(maximum==0 ? 0 : (maximum-minimum)/maximum)
+                hues[total]=hue(reds[total],greens[total],blues[total])
+                scores[total]=counts[total]*saturations[total]*values[total]
+            }
+            END {
+                primary=0
+                best=-1
+                for (i=1; i<=total; i++) {
+                    if (values[i]>=0.32 && saturations[i]>=0.15 && scores[i]>best) {
+                        best=scores[i]
+                        primary=i
+                    }
+                }
+                if (!primary) {
+                    for (i=1; i<=total; i++) {
+                        fallback=counts[i]*values[i]
+                        if (fallback>best) { best=fallback; primary=i }
+                    }
+                }
+
+                secondary=0
+                best=-1
+                for (i=1; i<=total; i++) {
+                    distance=hue_distance(hues[i],hues[primary])
+                    if (i!=primary && values[i]>=0.48 && saturations[i]>=0.20 && distance>=30) {
+                        companion=scores[i]*(0.5+distance/180)
+                        if (companion>best) { best=companion; secondary=i }
+                    }
+                }
+                if (!secondary) {
+                    for (i=1; i<=total; i++) {
+                        distance=hue_distance(hues[i],hues[primary])
+                        if (i!=primary && values[i]>=0.35 && distance>=12 && scores[i]>best) {
+                            best=scores[i]
+                            secondary=i
+                        }
+                    }
+                }
+                if (!secondary) secondary=primary
+                printf "%s\t%s\n", colors[primary], colors[secondary]
+            }
+        '
+    )" || emit_error "Could not extract a palette from the current Omarchy wallpaper."
+
+    IFS=$'\t' read -r primary secondary <<<"$palette"
+    primary="$(normalize_color "$primary")" || emit_error "Wallpaper palette extraction returned an invalid primary color."
+    secondary="$(normalize_color "$secondary")" || emit_error "Wallpaper palette extraction returned an invalid secondary color."
+    printf '%s\t%s\n' "$primary" "$secondary"
+}
+
+resolve_theme_pair() {
+    local requested_theme="$1"
+    local requested_source="${2:-}"
+    local current_theme
+    local theme_sync
+    local palette_source
+    local accent
+    local companion
+    local wallpaper
+    local palette
+    local sync_enabled
+
+    validate_state
+    current_theme="$(current_theme_name)"
+    [[ "$requested_theme" == "$current_theme" ]] || return 2
+
+    if [[ -n "$requested_source" ]]; then
+        palette_source="$requested_source"
+    else
+        theme_sync="$(load_theme_sync)"
+        palette_source="$(jq -r '.paletteSource' <<<"$theme_sync")"
+    fi
+
+    case "$palette_source" in
+        theme)
+            [[ -r "$current_theme_colors_file" ]] || emit_error "Omarchy current theme palette is unavailable."
+            accent="$(theme_color accent)" || emit_error "The current Omarchy theme has no valid accent color."
+            companion="$(theme_color magenta || true)"
+            if [[ -z "$companion" ]]; then
+                companion="$(theme_color bright_magenta || true)"
+            fi
+            [[ -n "$companion" ]] || companion="$accent"
+            wallpaper=""
+            ;;
+        wallpaper)
+            wallpaper="$(readlink -f "$current_background_link" 2>/dev/null || true)"
+            [[ -n "$wallpaper" ]] || emit_error "Omarchy current wallpaper is unavailable."
+            palette="$(wallpaper_palette "$wallpaper")"
+            IFS=$'\t' read -r accent companion <<<"$palette"
+            ;;
+        *)
+            emit_error "Palette source must be theme or wallpaper."
+            ;;
+    esac
+
+    sync_enabled="$(jq -r 'if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end' "$state_file")"
+
+    RESOLVED_THEME="$current_theme"
+    RESOLVED_SOURCE="$palette_source"
+    RESOLVED_WALLPAPER="${wallpaper##*/}"
+    RESOLVED_MOTHERBOARD="$accent"
+    if [[ "$sync_enabled" == "true" ]]; then
+        RESOLVED_RAM="$accent"
+        if [[ "$palette_source" == "wallpaper" ]]; then
+            RESOLVED_MAPPING="wallpaper-primary"
+        else
+            RESOLVED_MAPPING="accent"
+        fi
+    else
+        RESOLVED_RAM="$companion"
+        if [[ "$palette_source" == "wallpaper" ]]; then
+            RESOLVED_MAPPING="wallpaper-primary-secondary"
+        else
+            RESOLVED_MAPPING="accent-magenta"
+        fi
+    fi
+    RESOLVED_KEY="$RESOLVED_THEME:$RESOLVED_SOURCE:$RESOLVED_MOTHERBOARD:$RESOLVED_RAM:$RESOLVED_WALLPAPER"
+}
+
+write_theme_sync() {
+    local enabled="$1"
+    local theme="$2"
+    local motherboard="$3"
+    local ram="$4"
+    local mapping="$5"
+    local status="$6"
+    local message="$7"
+    local last_applied_key="$8"
+    local armed="$9"
+    local palette_source="${10}"
+    local wallpaper="${11}"
+    local updated_at
+    local state_tmp
+
+    updated_at="$(date --iso-8601=seconds)"
+    mkdir -p "$(dirname "$theme_sync_file")"
+    state_tmp="$(mktemp "${theme_sync_file}.tmp.XXXXXX")"
+    jq -n \
+        --argjson enabled "$enabled" \
+        --argjson armed "$armed" \
+        --arg paletteSource "$palette_source" \
+        --arg wallpaper "$wallpaper" \
+        --arg theme "$theme" \
+        --arg motherboard "$motherboard" \
+        --arg ram "$ram" \
+        --arg mapping "$mapping" \
+        --arg status "$status" \
+        --arg message "$message" \
+        --arg lastAppliedKey "$last_applied_key" \
+        --arg updatedAt "$updated_at" \
+        '{
+            version: 1,
+            enabled: $enabled,
+            armed: $armed,
+            paletteSource: $paletteSource,
+            wallpaper: $wallpaper,
+            theme: $theme,
+            motherboard: $motherboard,
+            ram: $ram,
+            mapping: $mapping,
+            status: $status,
+            message: $message,
+            lastAppliedKey: $lastAppliedKey,
+            updatedAt: $updatedAt
+        }' >"$state_tmp"
+    mv -- "$state_tmp" "$theme_sync_file"
+}
+
+theme_preview() {
+    local requested_theme="$1"
+    local requested_source="${2:-}"
+
+    if ! resolve_theme_pair "$requested_theme" "$requested_source"; then
+        emit_error "Theme '$requested_theme' is no longer the current Omarchy theme."
+    fi
+
+    jq -cn \
+        --arg theme "$RESOLVED_THEME" \
+        --arg motherboard "$RESOLVED_MOTHERBOARD" \
+        --arg ram "$RESOLVED_RAM" \
+        --arg mapping "$RESOLVED_MAPPING" \
+        --arg paletteSource "$RESOLVED_SOURCE" \
+        --arg wallpaper "$RESOLVED_WALLPAPER" \
+        '{
+            ok: true,
+            execute: false,
+            theme: $theme,
+            motherboard: $motherboard,
+            ram: $ram,
+            mapping: $mapping,
+            paletteSource: $paletteSource,
+            wallpaper: $wallpaper,
+            message: "Theme preview only; no hardware was accessed."
+        }'
+}
+
+set_theme_sync_mode() {
+    local requested_mode="$1"
+    local enabled
+    local existing
+    local last_applied_key
+    local armed
+
+    case "$requested_mode" in
+        on)  enabled=true ;;
+        off) enabled=false ;;
+        *)   emit_error "Theme sync mode must be on or off." ;;
+    esac
+
+    validate_state
+    command -v flock >/dev/null 2>&1 || emit_error "flock is required."
+    exec 8>"$theme_sync_lock_file"
+    flock -n 8 || emit_error "Another theme-sync action is already running."
+
+    existing="$(load_theme_sync)"
+    last_applied_key="$(jq -r '.lastAppliedKey' <<<"$existing")"
+    if [[ "$enabled" == "true" && "$(jq -r '.enabled' <<<"$existing")" == "true" ]]; then
+        armed="$(jq -r '.armed' <<<"$existing")"
+    else
+        armed=false
+    fi
+
+    if [[ "$enabled" == "true" ]]; then
+        if ! resolve_theme_pair "$(current_theme_name)"; then
+            emit_error "The current Omarchy theme changed while theme sync was being enabled."
+        fi
+        write_theme_sync true \
+            "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
+            "ready" "Theme sync is enabled. Apply the current theme once, then future theme selections will update automatically." \
+            "$last_applied_key" "$armed" "$RESOLVED_SOURCE" "$RESOLVED_WALLPAPER"
+        emit_state "Theme sync enabled; no hardware was accessed."
+    else
+        write_theme_sync false \
+            "$(jq -r '.theme' <<<"$existing")" \
+            "$(jq -r '.motherboard' <<<"$existing")" \
+            "$(jq -r '.ram' <<<"$existing")" \
+            "$(jq -r '.mapping' <<<"$existing")" \
+            "disabled" "" "$last_applied_key" false \
+            "$(jq -r '.paletteSource' <<<"$existing")" "$(jq -r '.wallpaper' <<<"$existing")"
+        emit_state "Theme sync disabled; no hardware was accessed."
+    fi
+}
+
+set_palette_source() {
+    local requested_source="$1"
+    local existing
+    local enabled
+    local status
+    local message
+
+    [[ "$requested_source" == "theme" || "$requested_source" == "wallpaper" ]] \
+        || emit_error "Palette source must be theme or wallpaper."
+
+    validate_state
+    command -v flock >/dev/null 2>&1 || emit_error "flock is required."
+    exec 8>"$theme_sync_lock_file"
+    flock -n 8 || emit_error "Another theme-sync action is already running."
+
+    existing="$(load_theme_sync)"
+    if [[ "$(jq -r '.paletteSource' <<<"$existing")" == "$requested_source" ]]; then
+        emit_state "Palette source is already $requested_source; no hardware was accessed."
+        return
+    fi
+
+    if ! resolve_theme_pair "$(current_theme_name)" "$requested_source"; then
+        emit_error "The current Omarchy theme changed while the palette source was being updated."
+    fi
+
+    enabled="$(jq -r '.enabled' <<<"$existing")"
+    if [[ "$enabled" == "true" ]]; then
+        status="ready"
+        message="Palette source changed. Review the swatches, then apply once to re-arm automatic hardware updates."
+    else
+        status="disabled"
+        message=""
+    fi
+
+    write_theme_sync "$enabled" \
+        "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
+        "$status" "$message" "$(jq -r '.lastAppliedKey' <<<"$existing")" false \
+        "$RESOLVED_SOURCE" "$RESOLVED_WALLPAPER"
+    emit_state "Palette source changed to $requested_source; no hardware was accessed and automatic writes are unarmed."
+}
+
+dismiss_theme_sync_error() {
+    local existing
+    local enabled
+    local status
+
+    command -v flock >/dev/null 2>&1 || emit_error "flock is required."
+    exec 8>"$theme_sync_lock_file"
+    flock -n 8 || emit_error "Another theme-sync action is already running."
+
+    existing="$(load_theme_sync)"
+    enabled="$(jq -r '.enabled' <<<"$existing")"
+    if [[ "$enabled" == "true" ]]; then status="ready"; else status="disabled"; fi
+    write_theme_sync "$enabled" \
+        "$(jq -r '.theme' <<<"$existing")" \
+        "$(jq -r '.motherboard' <<<"$existing")" \
+        "$(jq -r '.ram' <<<"$existing")" \
+        "$(jq -r '.mapping' <<<"$existing")" \
+        "$status" "" "$(jq -r '.lastAppliedKey' <<<"$existing")" "$(jq -r '.armed' <<<"$existing")" \
+        "$(jq -r '.paletteSource' <<<"$existing")" "$(jq -r '.wallpaper' <<<"$existing")"
+    emit_state "Theme-sync error dismissed; no hardware was accessed."
+}
+
+validate_allowlist() {
+    local config_file="$1"
+    local expected_json="$2"
+
+    [[ -r "$config_file" ]] || emit_error "Detector configuration is missing: $config_file"
+    jq -e --argjson expected "$expected_json" '
+        (.Detectors.detectors | type) == "object"
+        and (.Detectors.detectors | length) == 2020
+        and all(.Detectors.detectors[]; type == "boolean")
+        and ((.Detectors.detectors
+            | to_entries
+            | map(select(.value == true) | .key)
+            | sort) == ($expected | sort))
+    ' "$config_file" >/dev/null || emit_error "Detector allowlist validation failed: $config_file"
+}
+
+validate_runtime() {
+    [[ -x "$openrgb_bin" ]] || emit_error "The verified OpenRGB binary is missing or not executable."
+    command -v sha256sum >/dev/null 2>&1 || emit_error "sha256sum is required."
+    command -v flock >/dev/null 2>&1 || emit_error "flock is required."
+    command -v pgrep >/dev/null 2>&1 || emit_error "pgrep is required."
+
+    local actual_sha256
+    actual_sha256="$(sha256sum -- "$openrgb_bin" | cut -d ' ' -f 1)"
+    [[ "$actual_sha256" == "$expected_sha256" ]] || emit_error "The OpenRGB binary checksum no longer matches the tested build."
+}
+
+validate_profile() {
+    local profile="$1"
+
+    case "$profile" in
+        motherboard)
+            validate_allowlist "$motherboard_config/OpenRGB.json" '["MSI Mystic Light Common","MSI Mystic Light X870"]'
+            ;;
+        ram)
+            validate_allowlist "$ram_config/OpenRGB.json" '["ENE SMBus DRAM"]'
+            jq -e 'has("ENESMBusSettings") | not' "$ram_config/OpenRGB.json" >/dev/null \
+                || emit_error "RAM configuration unexpectedly enables ENE persistence settings."
+            ;;
+        combined)
+            validate_allowlist "$combined_config/OpenRGB.json" '["ENE SMBus DRAM","MSI Mystic Light Common","MSI Mystic Light X870"]'
+            jq -e 'has("ENESMBusSettings") | not' "$combined_config/OpenRGB.json" >/dev/null \
+                || emit_error "Combined configuration unexpectedly enables ENE persistence settings."
+            ;;
+        *)
+            emit_error "Unknown detector profile: $profile"
+            ;;
+    esac
+}
+
+plan_action() {
+    local target="$1"
+    local motherboard="$2"
+    local ram="$3"
+    local profile
+
+    case "$target" in
+        motherboard) profile="motherboard" ;;
+        ram)         profile="ram" ;;
+        all)         profile="combined" ;;
+        *)           emit_error "Target must be motherboard, ram, or all." ;;
+    esac
+
+    validate_runtime
+    validate_profile "$profile"
+    jq -cn \
+        --arg target "$target" \
+        --arg profile "$profile" \
+        --arg motherboard "$motherboard" \
+        --arg ram "$ram" \
+        '{ok: true, execute: false, target: $target, profile: $profile, motherboard: $motherboard, ram: $ram, message: "Dry run only; no hardware was accessed."}'
+}
+
+write_state() {
+    local motherboard="$1"
+    local ram="$2"
+    local saved_motherboard="$3"
+    local saved_ram="$4"
+    local lights_on="$5"
+    local sync_enabled="$6"
+    local last_action="$7"
+    local updated_at
+    local state_tmp
+
+    updated_at="$(date --iso-8601=seconds)"
+    state_tmp="$(mktemp "${state_file}.tmp.XXXXXX")"
+    jq -n \
+        --arg motherboard "$motherboard" \
+        --arg ram "$ram" \
+        --arg savedMotherboard "$saved_motherboard" \
+        --arg savedRam "$saved_ram" \
+        --argjson lightsOn "$lights_on" \
+        --argjson syncEnabled "$sync_enabled" \
+        --arg lastAction "$last_action" \
+        --arg updatedAt "$updated_at" \
+        '{
+            motherboard: $motherboard,
+            ram: $ram,
+            savedMotherboard: $savedMotherboard,
+            savedRam: $savedRam,
+            lightsOn: $lightsOn,
+            syncEnabled: $syncEnabled,
+            lastAction: $lastAction,
+            updatedAt: $updatedAt,
+            source: "omarchy-plugin"
+        }' \
+        >"$state_tmp"
+    mv -- "$state_tmp" "$state_file"
+}
+
+update_state() {
+    local target="$1"
+    local motherboard="$2"
+    local ram="$3"
+    local current_motherboard
+    local current_ram
+    local saved_motherboard
+    local saved_ram
+    local sync_enabled
+
+    validate_state
+    current_motherboard="$(jq -r '.motherboard' "$state_file")"
+    current_ram="$(jq -r '.ram' "$state_file")"
+    saved_motherboard="$(jq -r '.savedMotherboard // .motherboard' "$state_file")"
+    saved_ram="$(jq -r '.savedRam // .ram' "$state_file")"
+    sync_enabled="$(jq -r 'if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end' "$state_file")"
+
+    case "$target" in
+        motherboard)
+            current_motherboard="$motherboard"
+            saved_motherboard="$motherboard"
+            ;;
+        ram)
+            current_ram="$ram"
+            saved_ram="$ram"
+            ;;
+        all)
+            current_motherboard="$motherboard"
+            current_ram="$ram"
+            saved_motherboard="$motherboard"
+            saved_ram="$ram"
+            ;;
+    esac
+
+    write_state \
+        "$current_motherboard" "$current_ram" \
+        "$saved_motherboard" "$saved_ram" \
+        true "$sync_enabled" "$target"
+}
+
+apply_action() {
+    local target="$1"
+    local motherboard="$2"
+    local ram="$3"
+    local profile
+    local config_dir
+    local -a openrgb_args
+
+    case "$target" in
+        motherboard)
+            profile="motherboard"
+            config_dir="$motherboard_config"
+            openrgb_args=(--config "$config_dir" --noautoconnect --device "MSI MYSTIC LIGHT" --mode Static --color "$motherboard")
+            ;;
+        ram)
+            profile="ram"
+            config_dir="$ram_config"
+            openrgb_args=(--config "$config_dir" --noautoconnect --device "ENE DRAM" --mode Static --color "$ram")
+            ;;
+        all)
+            profile="combined"
+            config_dir="$combined_config"
+            openrgb_args=(
+                --config "$config_dir"
+                --noautoconnect
+                --device "ENE DRAM" --mode Static --color "$ram"
+                --device "MSI MYSTIC LIGHT" --mode Static --color "$motherboard"
+            )
+            ;;
+        *)
+            emit_error "Target must be motherboard, ram, or all."
+            ;;
+    esac
+
+    validate_runtime
+    validate_profile "$profile"
+
+    exec 9>"$lock_file"
+    flock -n 9 || emit_error "Another RGB action is already running."
+    if pgrep -x openrgb >/dev/null 2>&1; then
+        emit_error "OpenRGB is already running. Close its GUI before using the RGB panel."
+    fi
+
+    if "$openrgb_bin" "${openrgb_args[@]}" >"$last_log" 2>&1; then
+        update_state "$target" "$motherboard" "$ram"
+    else
+        local exit_code=$?
+        emit_error "OpenRGB exited with code $exit_code. No retry or restore was attempted; see $last_log" "$exit_code"
+    fi
+
+    case "$target" in
+        motherboard) emit_state "Motherboard set to #$motherboard." ;;
+        ram)         emit_state "Both RAM DIMMs set to #$ram." ;;
+        all)         emit_state "Motherboard set to #$motherboard and RAM set to #$ram." ;;
+    esac
+}
+
+write_saved_theme_state() {
+    local motherboard="$1"
+    local ram="$2"
+    local updated_at
+    local state_tmp
+
+    updated_at="$(date --iso-8601=seconds)"
+    state_tmp="$(mktemp "${state_file}.tmp.XXXXXX")"
+    jq \
+        --arg savedMotherboard "$motherboard" \
+        --arg savedRam "$ram" \
+        --arg updatedAt "$updated_at" '
+        . + {
+            savedMotherboard: $savedMotherboard,
+            savedRam: $savedRam,
+            lastAction: "theme-sync-saved",
+            updatedAt: $updatedAt,
+            source: "omarchy-plugin"
+        }
+    ' "$state_file" >"$state_tmp"
+    mv -- "$state_tmp" "$state_file"
+}
+
+record_theme_sync_error() {
+    local message="$1"
+    local existing="$2"
+
+    write_theme_sync true \
+        "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
+        "error" "$message" "$(jq -r '.lastAppliedKey' <<<"$existing")" "$(jq -r '.armed' <<<"$existing")" \
+        "$RESOLVED_SOURCE" "$RESOLVED_WALLPAPER"
+}
+
+apply_theme_sync() {
+    local requested_theme="$1"
+    local request_source="$2"
+    local current_theme
+    local existing
+    local enabled
+    local armed
+    local lights_on
+    local current_motherboard
+    local current_ram
+    local saved_motherboard
+    local saved_ram
+    local sync_enabled
+    local validation_output
+    local validation_message
+    local -a openrgb_args
+
+    validate_state
+    command -v flock >/dev/null 2>&1 || emit_error "flock is required."
+    [[ "$request_source" == "manual" || "$request_source" == "event" ]] \
+        || emit_error "Theme apply source must be manual or event."
+
+    current_theme="$(current_theme_name)"
+    if [[ "$requested_theme" != "$current_theme" ]]; then
+        emit_state "Ignored stale theme-sync request for '$requested_theme'; '$current_theme' is current."
+        return
+    fi
+
+    if ! resolve_theme_pair "$requested_theme"; then
+        emit_state "Ignored stale theme-sync request for '$requested_theme'."
+        return
+    fi
+
+    exec 8>"$theme_sync_lock_file"
+    flock -n 8 || emit_error "Another theme-sync action is already running."
+
+    existing="$(load_theme_sync)"
+    enabled="$(jq -r '.enabled' <<<"$existing")"
+    armed="$(jq -r '.armed' <<<"$existing")"
+    if [[ "$enabled" != "true" ]]; then
+        emit_state "Theme sync is disabled; no hardware was accessed."
+        return
+    fi
+
+    current_theme="$(current_theme_name)"
+    if [[ "$requested_theme" != "$current_theme" ]] || ! resolve_theme_pair "$requested_theme"; then
+        emit_state "Ignored theme-sync request because the selected theme changed again."
+        return
+    fi
+
+    if [[ "$request_source" == "event" && "$armed" != "true" ]]; then
+        write_theme_sync true \
+            "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
+            "ready" "A new theme was detected. Apply the current theme once to start automatic hardware updates." \
+            "$(jq -r '.lastAppliedKey' <<<"$existing")" false "$RESOLVED_SOURCE" "$RESOLVED_WALLPAPER"
+        emit_state "Theme preview updated, but automatic hardware updates are not armed yet."
+        return
+    fi
+
+    exec 9>"$lock_file"
+    if ! flock -n 9; then
+        record_theme_sync_error "Theme sync skipped because another RGB action is running. No retry was attempted." "$existing"
+        emit_error "Another RGB action is already running. Theme sync did not retry."
+    fi
+
+    lights_on="$(jq -r 'if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end' "$state_file")"
+    current_motherboard="$(jq -r '.motherboard' "$state_file")"
+    current_ram="$(jq -r '.ram' "$state_file")"
+    saved_motherboard="$(jq -r '.savedMotherboard // .motherboard' "$state_file")"
+    saved_ram="$(jq -r '.savedRam // .ram' "$state_file")"
+    sync_enabled="$(jq -r 'if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end' "$state_file")"
+
+    if [[ "$lights_on" == "false" ]]; then
+        if [[ "$saved_motherboard" != "$RESOLVED_MOTHERBOARD" || "$saved_ram" != "$RESOLVED_RAM" ]]; then
+            write_saved_theme_state "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM"
+        fi
+        write_theme_sync true \
+            "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
+            "saved" "Lights stayed off. The theme palette was saved for the next Turn Lights On action." \
+            "$RESOLVED_KEY" true "$RESOLVED_SOURCE" "$RESOLVED_WALLPAPER"
+        emit_state "Theme palette saved for lights-on; no hardware was accessed."
+        return
+    fi
+
+    if [[ "$current_motherboard" == "$RESOLVED_MOTHERBOARD" && "$current_ram" == "$RESOLVED_RAM" ]]; then
+        write_theme_sync true \
+            "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
+            "applied" "The current lighting already matches this Omarchy theme." \
+            "$RESOLVED_KEY" true "$RESOLVED_SOURCE" "$RESOLVED_WALLPAPER"
+        emit_state "Lighting already matches the current Omarchy theme; no hardware was accessed."
+        return
+    fi
+
+    if ! validation_output="$({ validate_runtime; validate_profile combined; } 2>&1)"; then
+        validation_message="$(printf '%s' "$validation_output" | jq -r '.message // empty' 2>/dev/null || true)"
+        [[ -n "$validation_message" ]] || validation_message="Theme sync safety validation failed."
+        record_theme_sync_error "$validation_message" "$existing"
+        emit_error "$validation_message"
+    fi
+
+    if pgrep -x openrgb >/dev/null 2>&1; then
+        record_theme_sync_error "Theme sync was not applied because OpenRGB is already running. Close its GUI and apply the current theme from the RGB panel." "$existing"
+        emit_error "OpenRGB is already running. Close its GUI before using theme sync."
+    fi
+
+    openrgb_args=(
+        --config "$combined_config"
+        --noautoconnect
+        --device "ENE DRAM" --mode Static --color "$RESOLVED_RAM"
+        --device "MSI MYSTIC LIGHT" --mode Static --color "$RESOLVED_MOTHERBOARD"
+    )
+
+    if "$openrgb_bin" "${openrgb_args[@]}" >"$last_log" 2>&1; then
+        write_state \
+            "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" \
+            "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" \
+            true "$sync_enabled" "theme-sync"
+        write_theme_sync true \
+            "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
+            "applied" "Lighting matched the selected Omarchy theme." \
+            "$RESOLVED_KEY" true "$RESOLVED_SOURCE" "$RESOLVED_WALLPAPER"
+    else
+        local exit_code=$?
+        record_theme_sync_error "OpenRGB exited with code $exit_code. No retry or restore was attempted; see $last_log" "$existing"
+        emit_error "OpenRGB exited with code $exit_code. No retry or restore was attempted; see $last_log" "$exit_code"
+    fi
+
+    emit_state "Omarchy theme '$RESOLVED_THEME' applied: motherboard #$RESOLVED_MOTHERBOARD and RAM #$RESOLVED_RAM."
+}
+
+plan_power() {
+    local direction="$1"
+    local lights_on
+    local motherboard
+    local ram
+    local saved_motherboard
+    local saved_ram
+    local no_op=false
+
+    [[ "$direction" == "on" || "$direction" == "off" ]] \
+        || emit_error "Power direction must be on or off."
+
+    validate_state
+    validate_runtime
+    validate_profile combined
+
+    lights_on="$(jq -r 'if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end' "$state_file")"
+    saved_motherboard="$(jq -r '.savedMotherboard // .motherboard' "$state_file")"
+    saved_ram="$(jq -r '.savedRam // .ram' "$state_file")"
+
+    if [[ "$direction" == "off" ]]; then
+        motherboard="000000"
+        ram="000000"
+        [[ "$lights_on" == "false" ]] && no_op=true
+    else
+        motherboard="$saved_motherboard"
+        ram="$saved_ram"
+        [[ "$lights_on" == "true" ]] && no_op=true
+    fi
+
+    jq -cn \
+        --arg direction "$direction" \
+        --arg motherboard "$motherboard" \
+        --arg ram "$ram" \
+        --arg savedMotherboard "$saved_motherboard" \
+        --arg savedRam "$saved_ram" \
+        --argjson noOp "$no_op" \
+        '{
+            ok: true,
+            execute: false,
+            action: "power",
+            direction: $direction,
+            profile: "combined",
+            motherboard: $motherboard,
+            ram: $ram,
+            savedMotherboard: $savedMotherboard,
+            savedRam: $savedRam,
+            noOp: $noOp,
+            message: "Dry run only; no hardware was accessed."
+        }'
+}
+
+apply_power() {
+    local direction="$1"
+    local lights_on
+    local motherboard
+    local ram
+    local saved_motherboard
+    local saved_ram
+    local sync_enabled
+    local -a openrgb_args
+
+    [[ "$direction" == "on" || "$direction" == "off" ]] \
+        || emit_error "Power direction must be on or off."
+
+    validate_state
+    validate_runtime
+    validate_profile combined
+
+    exec 9>"$lock_file"
+    flock -n 9 || emit_error "Another RGB action is already running."
+
+    lights_on="$(jq -r 'if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end' "$state_file")"
+    saved_motherboard="$(jq -r '.savedMotherboard // .motherboard' "$state_file")"
+    saved_ram="$(jq -r '.savedRam // .ram' "$state_file")"
+    sync_enabled="$(jq -r 'if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end' "$state_file")"
+
+    if [[ "$direction" == "off" && "$lights_on" == "false" ]]; then
+        emit_state "Lights are already off; saved colors were preserved."
+        return
+    fi
+    if [[ "$direction" == "on" && "$lights_on" == "true" ]]; then
+        emit_state "Lights are already on."
+        return
+    fi
+
+    if pgrep -x openrgb >/dev/null 2>&1; then
+        emit_error "OpenRGB is already running. Close its GUI before using the RGB panel."
+    fi
+
+    if [[ "$direction" == "off" ]]; then
+        saved_motherboard="$(jq -r '.motherboard' "$state_file")"
+        saved_ram="$(jq -r '.ram' "$state_file")"
+        motherboard="000000"
+        ram="000000"
+    else
+        motherboard="$saved_motherboard"
+        ram="$saved_ram"
+    fi
+
+    openrgb_args=(
+        --config "$combined_config"
+        --noautoconnect
+        --device "ENE DRAM" --mode Static --color "$ram"
+        --device "MSI MYSTIC LIGHT" --mode Static --color "$motherboard"
+    )
+
+    if "$openrgb_bin" "${openrgb_args[@]}" >"$last_log" 2>&1; then
+        if [[ "$direction" == "off" ]]; then
+            write_state \
+                "000000" "000000" \
+                "$saved_motherboard" "$saved_ram" \
+                false "$sync_enabled" "power-off"
+        else
+            write_state \
+                "$motherboard" "$ram" \
+                "$saved_motherboard" "$saved_ram" \
+                true "$sync_enabled" "power-on"
+        fi
+    else
+        local exit_code=$?
+        emit_error "OpenRGB exited with code $exit_code. No retry or restore was attempted; see $last_log" "$exit_code"
+    fi
+
+    if [[ "$direction" == "off" ]]; then
+        emit_state "Lights turned off; motherboard #$saved_motherboard and RAM #$saved_ram were saved."
+    else
+        emit_state "Lights restored: motherboard #$motherboard and RAM #$ram."
+    fi
+}
+
+set_sync_mode() {
+    local requested_mode="$1"
+    local sync_enabled
+    local state_tmp
+    local theme_sync
+
+    case "$requested_mode" in
+        sync)       sync_enabled=true ;;
+        individual) sync_enabled=false ;;
+        *)          emit_error "Mode must be sync or individual." ;;
+    esac
+
+    validate_state
+    command -v flock >/dev/null 2>&1 || emit_error "flock is required."
+    exec 8>"$theme_sync_lock_file"
+    flock -n 8 || emit_error "Another theme-sync action is already running."
+    exec 9>"$lock_file"
+    flock -n 9 || emit_error "Another RGB action is already running."
+
+    state_tmp="$(mktemp "${state_file}.tmp.XXXXXX")"
+    jq --argjson syncEnabled "$sync_enabled" '. + {syncEnabled: $syncEnabled}' \
+        "$state_file" >"$state_tmp"
+    mv -- "$state_tmp" "$state_file"
+
+    theme_sync="$(load_theme_sync)"
+    if [[ "$(jq -r '.enabled' <<<"$theme_sync")" == "true" ]]; then
+        if ! resolve_theme_pair "$(current_theme_name)"; then
+            emit_error "The current Omarchy theme changed while device mode was being updated."
+        fi
+        write_theme_sync true \
+            "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
+            "ready" "Device mode changed the theme palette preview. Apply the current theme to update lighting." \
+            "$(jq -r '.lastAppliedKey' <<<"$theme_sync")" "$(jq -r '.armed' <<<"$theme_sync")" \
+            "$RESOLVED_SOURCE" "$RESOLVED_WALLPAPER"
+    fi
+
+    if [[ "$requested_mode" == "sync" ]]; then
+        emit_state "Sync mode selected; no hardware was accessed."
+    else
+        emit_state "Individual mode selected; no hardware was accessed."
+    fi
+}
+
+usage() {
+    printf '%s\n' \
+        'Usage:' \
+        '  openrgb-msi7e49-control status' \
+        '  openrgb-msi7e49-control check' \
+        '  openrgb-msi7e49-control plan motherboard HEX' \
+        '  openrgb-msi7e49-control plan ram HEX' \
+        '  openrgb-msi7e49-control plan all MB_HEX RAM_HEX' \
+        '  openrgb-msi7e49-control apply motherboard HEX' \
+        '  openrgb-msi7e49-control apply ram HEX' \
+        '  openrgb-msi7e49-control apply all MB_HEX RAM_HEX' \
+        '  openrgb-msi7e49-control plan-power on|off' \
+        '  openrgb-msi7e49-control power on|off' \
+        '  openrgb-msi7e49-control mode sync|individual' \
+        '  openrgb-msi7e49-control theme-preview [THEME_SLUG] [theme|wallpaper]' \
+        '  openrgb-msi7e49-control theme-mode on|off' \
+        '  openrgb-msi7e49-control palette-source theme|wallpaper' \
+        '  openrgb-msi7e49-control theme-apply THEME_SLUG' \
+        '  openrgb-msi7e49-control theme-event THEME_SLUG' \
+        '  openrgb-msi7e49-control theme-error dismiss'
+}
+
+readonly action="${1:-}"
+
+case "$action" in
+    status)
+        emit_state "Ready. Colors are the last successful or visually confirmed state."
+        ;;
+    check)
+        validate_runtime
+        validate_profile motherboard
+        validate_profile ram
+        validate_profile combined
+        emit_state "All guards passed; no hardware was accessed."
+        ;;
+    plan|apply)
+        readonly request_target="${2:-}"
+        readonly raw_first="${3:-}"
+        readonly raw_second="${4:-}"
+        first=""
+        second=""
+
+        if ! first="$(normalize_color "$raw_first")"; then
+            emit_error "Color must be exactly six hexadecimal digits."
+        fi
+
+        case "$request_target" in
+            motherboard)
+                [[ -z "$raw_second" ]] || emit_error "Motherboard accepts one color."
+                if [[ "$action" == "plan" ]]; then plan_action motherboard "$first" ""; else apply_action motherboard "$first" ""; fi
+                ;;
+            ram)
+                [[ -z "$raw_second" ]] || emit_error "RAM accepts one color."
+                if [[ "$action" == "plan" ]]; then plan_action ram "" "$first"; else apply_action ram "" "$first"; fi
+                ;;
+            all)
+                if ! second="$(normalize_color "$raw_second")"; then
+                    emit_error "The all target requires motherboard and RAM colors."
+                fi
+                if [[ "$action" == "plan" ]]; then plan_action all "$first" "$second"; else apply_action all "$first" "$second"; fi
+                ;;
+            *)
+                emit_error "Target must be motherboard, ram, or all."
+                ;;
+        esac
+        ;;
+    plan-power)
+        [[ -z "${3:-}" ]] || emit_error "Power planning accepts one direction."
+        plan_power "${2:-}"
+        ;;
+    power)
+        [[ -z "${3:-}" ]] || emit_error "Power accepts one direction."
+        apply_power "${2:-}"
+        ;;
+    mode)
+        [[ -z "${3:-}" ]] || emit_error "Mode accepts one value."
+        set_sync_mode "${2:-}"
+        ;;
+    theme-preview)
+        [[ -z "${4:-}" ]] || emit_error "Theme preview accepts a theme slug and optional palette source."
+        theme_preview "${2:-$(current_theme_name)}" "${3:-}"
+        ;;
+    theme-mode)
+        [[ -z "${3:-}" ]] || emit_error "Theme mode accepts one value."
+        set_theme_sync_mode "${2:-}"
+        ;;
+    palette-source)
+        [[ -z "${3:-}" ]] || emit_error "Palette source accepts one value."
+        set_palette_source "${2:-}"
+        ;;
+    theme-apply)
+        [[ -n "${2:-}" && -z "${3:-}" ]] || emit_error "Theme apply requires one theme slug."
+        apply_theme_sync "$2" manual
+        ;;
+    theme-event)
+        [[ -n "${2:-}" && -z "${3:-}" ]] || emit_error "Theme event requires one theme slug."
+        apply_theme_sync "$2" event
+        ;;
+    theme-error)
+        [[ "${2:-}" == "dismiss" && -z "${3:-}" ]] || emit_error "Theme error accepts only dismiss."
+        dismiss_theme_sync_error
+        ;;
+    help|-h|--help|"")
+        usage
+        ;;
+    *)
+        emit_error "Unknown action: $action"
+        ;;
+esac

@@ -1,0 +1,5 @@
+google-chrome
+input-remapper-git
+omnissa-horizon-client
+omnissa-horizon-client-next
+rider

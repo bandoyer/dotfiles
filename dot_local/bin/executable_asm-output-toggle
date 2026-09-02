@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+config_root="${XDG_CONFIG_HOME:-$HOME/.config}/arctis_manager"
+routing_file="$config_root/channel_output_devices.json"
+
+arena_sink="alsa_output.usb-SteelSeries_SteelSeries_Arena_7-00.analog-stereo"
+headset_sink="alsa_output.usb-SteelSeries_Arctis_Nova_Pro_Wireless-00.analog-stereo"
+
+current_mode() {
+  if [[ ! -r "$routing_file" ]]; then
+    printf '%s\n' "unknown"
+  elif jq -e --arg sink "$arena_sink" \
+      '.game == $sink and .chat == $sink and .media == $sink' \
+      "$routing_file" >/dev/null 2>&1; then
+    printf '%s\n' "arena"
+  elif jq -e --arg sink "$headset_sink" \
+      '.game == $sink and .chat == $sink and .media == $sink' \
+      "$routing_file" >/dev/null 2>&1; then
+    printf '%s\n' "headset"
+  else
+    printf '%s\n' "custom"
+  fi
+}
+
+apply_mode() {
+  local mode="$1"
+  local sink label icon temporary_file
+
+  case "$mode" in
+    arena)
+      sink="$arena_sink"
+      label="Arena 7"
+      icon="audio-speakers"
+      ;;
+    headset)
+      sink="$headset_sink"
+      label="Arctis Nova Pro Wireless"
+      icon="audio-headphones"
+      ;;
+    *)
+      printf 'Unknown output mode: %s\n' "$mode" >&2
+      return 2
+      ;;
+  esac
+
+  mkdir -p "$config_root"
+  temporary_file="$(mktemp "$config_root/.channel-output-devices.XXXXXX")"
+  trap 'rm -f -- "$temporary_file"' RETURN
+
+  jq -n --arg sink "$sink" \
+    '{game: $sink, chat: $sink, media: $sink}' >"$temporary_file"
+  chmod 600 "$temporary_file"
+  mv -- "$temporary_file" "$routing_file"
+  trap - RETURN
+
+  if ! busctl --user call \
+      name.giacomofurlan.ArctisManager.Next \
+      /name/giacomofurlan/ArctisManager/Next/Config \
+      name.giacomofurlan.ArctisManager.Next.Config \
+      ApplyChannelOutputs >/dev/null; then
+    systemctl --user restart arctis-manager.service
+  fi
+
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send --app-name="Audio Output" --icon="$icon" \
+      "Audio output switched" "$label (ASM EQ active)"
+  fi
+
+  printf '%s\n' "$mode"
+}
+
+case "${1:-toggle}" in
+  status)
+    current_mode
+    ;;
+  toggle)
+    if [[ "$(current_mode)" == "arena" ]]; then
+      apply_mode headset
+    else
+      apply_mode arena
+    fi
+    ;;
+  arena|headset)
+    apply_mode "$1"
+    ;;
+  *)
+    printf 'Usage: %s [toggle|status|arena|headset]\n' "${0##*/}" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly openrgb_bin="$HOME/.local/opt/openrgb-msi7e49/81a80d8a0/openrgb"
+readonly config_dir="$HOME/.config/openrgb-msi7e49"
+readonly config_file="${config_dir}/OpenRGB.json"
+readonly expected_sha256="ea8e2d416528fb9044e3a5f1e7944d61c91e4c2402690a6952605644a1024734"
+
+fail() {
+    local message="$1"
+    printf 'OpenRGB MSI 7E49 launcher: %s\n' "$message" >&2
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send --urgency=critical "OpenRGB MSI 7E49 did not start" "$message" || true
+    fi
+    exit 1
+}
+
+[[ -x "$openrgb_bin" ]] || fail "The verified OpenRGB binary is missing or not executable."
+[[ -r "$config_file" ]] || fail "The isolated detector configuration is missing or unreadable."
+command -v jq >/dev/null 2>&1 || fail "jq is required to validate the detector allowlist."
+
+actual_sha256="$(sha256sum -- "$openrgb_bin" | cut -d ' ' -f 1)"
+[[ "$actual_sha256" == "$expected_sha256" ]] || fail "The OpenRGB binary checksum no longer matches the tested build."
+
+jq -e '
+    (.Detectors.detectors
+        | to_entries
+        | map(select(.value == true) | .key)
+        | sort)
+    == [
+        "ENE SMBus DRAM",
+        "MSI Mystic Light Common",
+        "MSI Mystic Light X870"
+    ]
+' "$config_file" >/dev/null || fail "The detector allowlist changed; expected only MSI 7E49 and ENE RAM support."
+
+if [[ "${1:-}" == "--check" && "$#" -eq 1 ]]; then
+    printf 'OpenRGB MSI 7E49 launcher checks passed.\n'
+    exit 0
+fi
+
+[[ "$#" -eq 0 ]] || fail "This guarded launcher accepts no command-line arguments other than --check."
+
+exec "$openrgb_bin" \
+    --config "$config_dir" \
+    --noautoconnect \
+    --gui
