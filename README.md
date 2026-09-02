@@ -15,6 +15,9 @@ The current snapshot was last validated with Omarchy `4.0.1-1`.
 - A customized notification service with persistent reminder behavior.
 - Guarded OpenRGB controls and an Omarchy RGB panel for an MSI MS-7E49 system.
 - One-click switching between SteelSeries speaker and headset routing.
+- Neru-powered mouseless navigation with custom hint, grid, and scroll controls.
+- HEY CLI integration in the Omarchy menu and bar.
+- A guarded local Qwen/llama.cpp server launcher.
 - A searchable command palette plus small workstation helper scripts.
 
 ## Repository map
@@ -66,6 +69,17 @@ fork or disposable test account is the safest place to experiment.
   memory devices documented in the plugin.
 - The audio widget and systemd service require Arctis Sound Manager commands
   installed separately as `asm-output-toggle`, `asm-gui`, and `asm-daemon`.
+- The Neru bindings and service require `neru-bin`. The tracked config is based
+  on Neru 1.51.0 and includes a keyboard-layout-specific recursive grid.
+- The HEY menu and bar entries require the public
+  [`37signals.hey`](https://github.com/basecamp/omarchy-hey-plugin) plugin and
+  HEY CLI. Install the plugin separately with
+  `omarchy plugin add https://github.com/basecamp/omarchy-hey-plugin.git --enable`;
+  credentials remain outside Chezmoi.
+- The `qwen38-server` helper expects a local Qwen GGUF, chat template, and API
+  key file under `~/.local/`; none of those assets or credentials are tracked.
+- The lock watchdog is a temporary mitigation for
+  [`omacom/omarchy#7106`](https://github.com/omacom/omarchy/issues/7106).
 - The package and service lists are recovery inventories, not installation
   scripts. Review them against the current Omarchy release and your own
   hardware before using them.
@@ -105,7 +119,8 @@ Credentials, sessions, caches, browser profiles, downloaded binaries, and
 files owned by `/usr/share/omarchy` do not belong in this repository. In
 particular, never commit SSH private keys, GitHub or cloud credentials, Codex,
 Claude, or Grok authentication files, password-manager data, browser cookies,
-keyrings, or the complete `.codex-remote-lab` directory.
+keyrings, HEY credentials, local model API keys, or the complete
+`.codex-remote-lab` directory.
 
 Recreate credentials through their installers and authentication flows, use a
 password-manager template, or store encrypted Chezmoi source files. Treat

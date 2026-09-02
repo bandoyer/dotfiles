@@ -1,10 +1,13 @@
 [tools]
+antigravity-cli = "latest"
 aspire = "latest"
 babashka = "latest"
 claude = "latest"
 codex = "latest"
 dotnet = "latest"
+gemini = { version = "latest", allow_builds = ["@github/keytar", "node-pty"] }
 gh = "latest"
+"github:basecamp/hey-cli" = "latest"
 node = "26.7.0"
 "npm:@xai-official/grok" = "latest"
 "npm:playwright" = "latest"

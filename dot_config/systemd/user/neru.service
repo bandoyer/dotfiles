@@ -1,0 +1,18 @@
+# Installed by `neru services install`
+# Neru rewrites this file on install and deletes it on uninstall. A neru.service
+# without the line above is one Neru leaves alone.
+
+[Unit]
+Description=Neru keyboard-driven mouse replacement daemon
+Documentation=https://github.com/y3owk1n/neru
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart="/usr/bin/neru" launch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

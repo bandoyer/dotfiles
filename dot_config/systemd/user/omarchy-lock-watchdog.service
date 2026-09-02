@@ -1,0 +1,15 @@
+[Unit]
+Description=Recover a stranded Omarchy lock shell
+Documentation=https://github.com/omacom/omarchy/issues/7106
+After=graphical-session.target
+PartOf=graphical-session.target
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/omarchy-lock-watchdog
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

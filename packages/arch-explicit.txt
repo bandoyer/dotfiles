@@ -19,9 +19,8 @@ chromium
 clang
 cliamp
 cups
-cups-browsed
 cups-filters
-cups-pdf
+cups-pk-helper
 ddcutil
 docker
 docker-buildx
@@ -42,8 +41,11 @@ fd
 ffmpegthumbnailer
 foot
 fzf
+ggml-cpu
+ggml-cuda
 ghostty
 git
+glab
 gnome-disk-utility
 gnome-keyring
 gnome-themes-extra
@@ -81,6 +83,7 @@ limine
 linux
 linux-firmware
 linux-headers
+llama-cpp
 llvm
 localsend
 lua51
@@ -96,6 +99,7 @@ mpv-mpris
 nautilus
 nautilus-python
 networkmanager
+noise-suppression-for-voice
 noto-fonts
 noto-fonts-cjk
 noto-fonts-emoji
@@ -138,7 +142,6 @@ socat
 starship
 sublime-text-4
 sudo
-sunshine
 sushi
 swh-plugins
 system-config-printer

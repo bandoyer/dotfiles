@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Foreground-only launcher. Stop it with Ctrl-C.
+# No MTP draft model, background service, autostart, or restart loop is used.
+readonly qwen38_model_path="$HOME/.local/share/llama.cpp/models/qwen3.8-27b/Qwen3.8-27B-Q4_K_M.gguf"
+readonly qwen38_template_path="$HOME/.local/share/llama.cpp/templates/qwen3.8-codex.jinja"
+readonly qwen38_key_path="$HOME/.local/state/llama.cpp/qwen38-api-key"
+readonly qwen38_log_path="$HOME/.local/state/llama.cpp/qwen38-server.log"
+
+if [[ ! -r "${qwen38_model_path}" ]]; then
+  echo "Qwen model is not readable: ${qwen38_model_path}" >&2
+  exit 1
+fi
+
+if [[ ! -r "${qwen38_template_path}" ]]; then
+  echo "Qwen chat template is not readable: ${qwen38_template_path}" >&2
+  exit 1
+fi
+
+if [[ ! -s "${qwen38_key_path}" ]]; then
+  echo "Qwen API key is missing or empty: ${qwen38_key_path}" >&2
+  exit 1
+fi
+
+exec /usr/bin/llama-server \
+  --model "${qwen38_model_path}" \
+  --ctx-size 32768 \
+  --predict 4096 \
+  --parallel 1 \
+  --gpu-layers auto \
+  --fit on \
+  --fit-target 6144 \
+  --flash-attn on \
+  --cache-type-k q8_0 \
+  --cache-type-v q8_0 \
+  --batch-size 1024 \
+  --ubatch-size 256 \
+  --split-mode none \
+  --main-gpu 0 \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --alias qwen3.8-27b \
+  --chat-template-file "${qwen38_template_path}" \
+  --jinja \
+  --reasoning off \
+  --reasoning-budget 0 \
+  --no-reasoning-preserve \
+  --temperature 0.2 \
+  --no-webui \
+  --no-warmup \
+  --api-key-file "${qwen38_key_path}" \
+  --log-file "${qwen38_log_path}"

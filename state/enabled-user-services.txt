@@ -1,10 +1,11 @@
-app-dev.lizardbyte.app.Sunshine.service
 arctis-manager.service
 bt-agent.service
 filter-chain.service
 gnome-keyring-daemon.socket
+neru.service
 omarchy-crash-watch.service
 omarchy-fcitx5.service
+omarchy-lock-watchdog.service
 omarchy-migrate-notify.service
 omarchy-recover-internal-monitor.service
 omarchy-sleep-lock.service

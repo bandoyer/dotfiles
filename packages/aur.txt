@@ -1,5 +1,6 @@
 google-chrome
 input-remapper-git
-omnissa-horizon-client
+neru-bin
 omnissa-horizon-client-next
 rider
+zsa-keymapp-bin

@@ -1,11 +1,11 @@
 {
-  "motherboard": "AB0915",
-  "ram": "AB0915",
-  "savedMotherboard": "AB0915",
-  "savedRam": "AB0915",
+  "motherboard": "F700FF",
+  "ram": "F700FF",
+  "savedMotherboard": "F700FF",
+  "savedRam": "F700FF",
   "lightsOn": true,
   "syncEnabled": true,
-  "lastAction": "power-on",
-  "updatedAt": "2026-08-31T12:59:33-04:00",
+  "lastAction": "all",
+  "updatedAt": "2026-09-02T17:22:51-04:00",
   "source": "omarchy-plugin"
 }

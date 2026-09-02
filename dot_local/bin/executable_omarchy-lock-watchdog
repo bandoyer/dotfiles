@@ -1,0 +1,61 @@
+#!/bin/bash
+
+# Recover the Omarchy shell only when its lock service is provably stranded:
+# Hyprland is still secure, but this Quickshell instance owns no lock surface.
+# This is a temporary mitigation for omacom/omarchy#7106.
+
+set -uo pipefail
+
+readonly omarchy_path="${OMARCHY_PATH:-/usr/share/omarchy}"
+readonly poll_seconds="${OMARCHY_LOCK_WATCHDOG_POLL_SECONDS:-3}"
+readonly required_matches="${OMARCHY_LOCK_WATCHDOG_REQUIRED_MATCHES:-2}"
+
+is_stranded() {
+  jq -e '
+    .secure == true and
+    .requested == true and
+    .pending == true and
+    .sessionLocked == false and
+    ((.lastEvent // "") | startswith("lock-pending:"))
+  ' >/dev/null 2>&1
+}
+
+if [[ ${1:-} == "--classify" ]]; then
+  if is_stranded; then
+    echo stranded
+    exit 0
+  fi
+
+  echo healthy
+  exit 1
+fi
+
+matches=0
+
+while true; do
+  state=$(
+    OMARCHY_PATH="$omarchy_path" \
+      OMARCHY_SHELL_IPC_TIMEOUT=1s \
+      omarchy-shell lock status 2>/dev/null
+  ) || state=""
+
+  if [[ -n $state ]] && is_stranded <<<"$state"; then
+    ((matches += 1))
+  else
+    matches=0
+  fi
+
+  if (( matches >= required_matches )); then
+    echo "Stranded Omarchy lock detected; restarting its Quickshell instance."
+
+    # Omarchy's launcher supervises Quickshell and immediately starts a fresh
+    # process, which can take ownership of the compositor's retained lock.
+    # Never clear the compositor lock: password authentication remains required.
+    timeout 5 quickshell kill -p "$omarchy_path/shell" --any-display >/dev/null 2>&1 || true
+
+    matches=0
+    sleep 10
+  else
+    sleep "$poll_seconds"
+  fi
+done

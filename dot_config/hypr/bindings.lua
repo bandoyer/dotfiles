@@ -27,3 +27,10 @@
 -- o.bind("SUPER + SHIFT + S", nil, "omarchy-capture-screenshot")
 -- o.bind("SUPER + H", nil, "voxtype record toggle")
 -- o.bind("SUPER + PERIOD", nil, "omarchy-shell shell toggle omarchy.emojis")
+
+-- Neru mouseless navigation. These compositor bindings avoid granting Neru
+-- blanket access to /dev/input while keeping the four modes on one key family.
+o.bind("SUPER + semicolon", "Neru: click interface hint", "/usr/bin/neru hints --action left_click")
+o.bind("SUPER + SHIFT + semicolon", "Neru: recursive grid", "/usr/bin/neru recursive_grid")
+o.bind("SUPER + ALT + semicolon", "Neru: click OCR text hint", "/usr/bin/neru hints --strategy vision --action left_click")
+o.bind("SUPER + CTRL + semicolon", "Neru: scroll mode", "/usr/bin/neru scroll --toggle")

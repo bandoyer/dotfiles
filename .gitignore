@@ -13,11 +13,13 @@ dot_config/chezmoi/chezmoi.toml
 dot_config/doctl/config.yaml
 dot_config/gh/hosts.yml
 dot_config/glab-cli/config.yml
+dot_config/hey-cli/
 dot_config/op/
 dot_claude.json*
 dot_claude/**/*credentials*
 dot_codex/**/*auth*.json*
 dot_grok/**/*auth*.json*
+dot_local/state/llama.cpp/
 **/.env
 **/*.key
 **/*.pem

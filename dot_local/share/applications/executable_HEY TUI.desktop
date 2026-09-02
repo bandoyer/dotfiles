@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Name=HEY TUI
+Comment=HEY email, contacts and calendar in the terminal
+Exec=xdg-terminal-exec --app-id=org.omarchy.hey -e hey tui
+Terminal=false
+Type=Application
+Icon=hey
+StartupNotify=true
