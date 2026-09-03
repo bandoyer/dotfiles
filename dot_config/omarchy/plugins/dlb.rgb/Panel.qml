@@ -35,10 +35,11 @@ Panel {
   property string errorText: ""
   property bool lastActionFailed: false
   property string pickerTarget: "motherboard"
+  property string pickerMotherboardColor: "FF0000"
+  property string pickerRamColor: "00AAFF"
   property real pickerHue: 0
   property real pickerSaturation: 1
   property real pickerValue: 1
-  property bool pickerUpdatingField: false
   property int barIconStyle: 3
   property bool iconColorSync: true
   property bool appearanceLoaded: false
@@ -218,16 +219,14 @@ Panel {
     if (!root.validHex(value)) return
     var color = root.cleanHex(value)
     var hsv = root.rgbToHsv(color)
-    root.pickerUpdatingField = true
     if (root.syncEnabled) {
-      motherboardField.text = color
-      ramField.text = color
+      root.pickerMotherboardColor = color
+      root.pickerRamColor = color
     } else if (root.pickerTarget === "ram") {
-      ramField.text = color
+      root.pickerRamColor = color
     } else {
-      motherboardField.text = color
+      root.pickerMotherboardColor = color
     }
-    root.pickerUpdatingField = false
     if (hsv) {
       root.pickerHue = hsv.h
       root.pickerSaturation = hsv.s
@@ -315,10 +314,10 @@ Panel {
     }
   }
 
-  function syncPickerFromField(target) {
-    if (root.pickerUpdatingField) return
+  function syncPickerFromSelection(target) {
     var resolvedTarget = root.syncEnabled ? "motherboard" : target
-    var value = resolvedTarget === "ram" ? ramField.text : motherboardField.text
+    var value = resolvedTarget === "ram"
+      ? root.pickerRamColor : root.pickerMotherboardColor
     var hsv = root.rgbToHsv(value)
     if (!hsv) return
     root.pickerHue = hsv.h
@@ -328,31 +327,29 @@ Panel {
 
   function setPickerTarget(target) {
     root.pickerTarget = root.syncEnabled ? "motherboard" : (target === "ram" ? "ram" : "motherboard")
-    root.syncPickerFromField(root.pickerTarget)
+    root.syncPickerFromSelection(root.pickerTarget)
   }
 
-  function updatePickerField() {
-    root.pickerUpdatingField = true
+  function updatePickerSelection() {
     if (root.syncEnabled) {
-      motherboardField.text = root.pickerHex
-      ramField.text = root.pickerHex
+      root.pickerMotherboardColor = root.pickerHex
+      root.pickerRamColor = root.pickerHex
     } else if (root.pickerTarget === "ram") {
-      ramField.text = root.pickerHex
+      root.pickerRamColor = root.pickerHex
     } else {
-      motherboardField.text = root.pickerHex
+      root.pickerMotherboardColor = root.pickerHex
     }
-    root.pickerUpdatingField = false
   }
 
   function updatePickerSaturationValue(x, y, width, height) {
     root.pickerSaturation = root.clampUnit(x / Math.max(1, width))
     root.pickerValue = root.clampUnit(1 - y / Math.max(1, height))
-    root.updatePickerField()
+    root.updatePickerSelection()
   }
 
   function updatePickerHue(x, width) {
     root.pickerHue = root.clampUnit(x / Math.max(1, width))
-    root.updatePickerField()
+    root.updatePickerSelection()
   }
 
   function applyPickerTarget() {
@@ -391,17 +388,15 @@ Panel {
 
       var displayMotherboard = root.lightsOn ? root.motherboardColor : root.savedMotherboardColor
       var displayRam = root.lightsOn ? root.ramColor : root.savedRamColor
-      root.pickerUpdatingField = true
       if (root.syncEnabled) {
         root.pickerTarget = "motherboard"
-        if (!motherboardField.activeFocus) motherboardField.text = displayMotherboard
-        if (!ramField.activeFocus) ramField.text = displayMotherboard
+        root.pickerMotherboardColor = displayMotherboard
+        root.pickerRamColor = displayMotherboard
       } else {
-        if (!motherboardField.activeFocus) motherboardField.text = displayMotherboard
-        if (!ramField.activeFocus) ramField.text = displayRam
+        root.pickerMotherboardColor = displayMotherboard
+        root.pickerRamColor = displayRam
       }
-      root.pickerUpdatingField = false
-      root.syncPickerFromField(root.pickerTarget)
+      root.syncPickerFromSelection(root.pickerTarget)
       if (result.ok === true) {
         if (actionResult && root.pendingRecentColors.length > 0)
           root.rememberRecentColors(root.pendingRecentColors)
@@ -458,44 +453,32 @@ Panel {
   }
 
   function applySynced() {
-    if (!validHex(motherboardField.text)) {
+    if (!validHex(root.pickerMotherboardColor)) {
       root.showError("Synced color must be six hex digits")
       return
     }
-    var color = cleanHex(motherboardField.text)
-    root.pickerUpdatingField = true
-    motherboardField.text = color
-    ramField.text = color
-    root.pickerUpdatingField = false
+    var color = cleanHex(root.pickerMotherboardColor)
+    root.pickerMotherboardColor = color
+    root.pickerRamColor = color
     runAction(["apply", "all", color, color], [color])
   }
 
   function applyMotherboard() {
-    if (!validHex(motherboardField.text)) {
+    if (!validHex(root.pickerMotherboardColor)) {
       root.showError("Motherboard color must be six hex digits")
       return
     }
-    var color = cleanHex(motherboardField.text)
+    var color = cleanHex(root.pickerMotherboardColor)
     runAction(["apply", "motherboard", color], [color])
   }
 
   function applyRam() {
-    if (!validHex(ramField.text)) {
+    if (!validHex(root.pickerRamColor)) {
       root.showError("RAM color must be six hex digits")
       return
     }
-    var color = cleanHex(ramField.text)
+    var color = cleanHex(root.pickerRamColor)
     runAction(["apply", "ram", color], [color])
-  }
-
-  function applyBoth() {
-    if (!validHex(motherboardField.text) || !validHex(ramField.text)) {
-      root.showError("Both colors must be six hex digits")
-      return
-    }
-    var motherboard = cleanHex(motherboardField.text)
-    var ram = cleanHex(ramField.text)
-    runAction(["apply", "all", motherboard, ram], [motherboard, ram])
   }
 
   function openAdvanced() {
@@ -505,7 +488,7 @@ Panel {
   }
 
   onOpenedChanged: if (opened) {
-    root.syncPickerFromField(root.pickerTarget)
+    root.syncPickerFromSelection(root.pickerTarget)
     root.refreshStatus()
   }
 
@@ -935,195 +918,6 @@ Panel {
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader {
-            text: "DEVICE COLORS"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Rectangle {
-            width: parent.width
-            height: Style.space(58)
-            radius: Style.cornerRadius
-            color: Style.normalFillFor(root.foreground, Color.accent)
-
-            Item {
-              anchors.fill: parent
-              anchors.margins: Style.space(8)
-
-              Rectangle {
-                id: motherboardSwatch
-                width: Style.space(24)
-                height: width
-                radius: width / 2
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                color: root.validHex(motherboardField.text) ? root.displayHex(motherboardField.text) : "transparent"
-                border.width: 1
-                border.color: root.foreground
-              }
-
-              Button {
-                id: motherboardApplyButton
-                width: Style.space(72)
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                text: "APPLY"
-                focusable: true
-                foreground: root.foreground
-                enabled: !root.busy && root.lightsOn && root.validHex(motherboardField.text)
-                onClicked: if (root.syncEnabled) root.applySynced(); else root.applyMotherboard()
-              }
-
-              TextField {
-                id: motherboardField
-                width: Style.space(96)
-                anchors.right: motherboardApplyButton.left
-                anchors.rightMargin: Style.space(8)
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.motherboardColor
-                placeholderText: "RRGGBB"
-                maximumLength: 7
-                horizontalAlignment: TextInput.AlignHCenter
-                foreground: root.foreground
-                font.family: root.fontFamily
-                enabled: !root.busy && root.lightsOn
-                onTextChanged: if (!root.pickerUpdatingField && root.validHex(text)) {
-                  root.pickerUpdatingField = true
-                  if (root.syncEnabled) ramField.text = root.cleanHex(text)
-                  root.pickerUpdatingField = false
-                  if (root.pickerTarget === "motherboard" || root.syncEnabled)
-                    root.syncPickerFromField("motherboard")
-                }
-                onAccepted: if (root.syncEnabled) root.applySynced(); else root.applyMotherboard()
-              }
-
-              Column {
-                anchors.left: motherboardSwatch.right
-                anchors.leftMargin: Style.space(8)
-                anchors.right: motherboardField.left
-                anchors.rightMargin: Style.space(8)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(1)
-                Text {
-                  width: parent.width
-                  text: root.syncEnabled ? "SYNCED DEVICES" : "MOTHERBOARD"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  font.bold: true
-                  elide: Text.ElideRight
-                }
-                Text {
-                  width: parent.width
-                  text: root.syncEnabled ? "Motherboard + both DIMMs" : "MSI Mystic Light"
-                  color: Qt.darker(root.foreground, 1.5)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                }
-              }
-            }
-          }
-
-          Rectangle {
-            width: parent.width
-            height: Style.space(58)
-            visible: !root.syncEnabled
-            radius: Style.cornerRadius
-            color: Style.normalFillFor(root.foreground, Color.accent)
-
-            Item {
-              anchors.fill: parent
-              anchors.margins: Style.space(8)
-
-              Rectangle {
-                id: ramSwatch
-                width: Style.space(24)
-                height: width
-                radius: width / 2
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                color: root.validHex(ramField.text) ? root.displayHex(ramField.text) : "transparent"
-                border.width: 1
-                border.color: root.foreground
-              }
-
-              Button {
-                id: ramApplyButton
-                width: Style.space(72)
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                text: "APPLY"
-                focusable: true
-                foreground: root.foreground
-                enabled: !root.busy && root.lightsOn && root.validHex(ramField.text)
-                onClicked: root.applyRam()
-              }
-
-              TextField {
-                id: ramField
-                width: Style.space(96)
-                anchors.right: ramApplyButton.left
-                anchors.rightMargin: Style.space(8)
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.ramColor
-                placeholderText: "RRGGBB"
-                maximumLength: 7
-                horizontalAlignment: TextInput.AlignHCenter
-                foreground: root.foreground
-                font.family: root.fontFamily
-                enabled: !root.busy && root.lightsOn
-                onTextChanged: if (!root.pickerUpdatingField
-                                      && root.pickerTarget === "ram"
-                                      && root.validHex(text)) {
-                  root.syncPickerFromField("ram")
-                }
-                onAccepted: root.applyRam()
-              }
-
-              Column {
-                anchors.left: ramSwatch.right
-                anchors.leftMargin: Style.space(8)
-                anchors.right: ramField.left
-                anchors.rightMargin: Style.space(8)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(1)
-                Text {
-                  width: parent.width
-                  text: "RAM PAIR"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  font.bold: true
-                  elide: Text.ElideRight
-                }
-                Text {
-                  width: parent.width
-                  text: "Both ENE DIMMs"
-                  color: Qt.darker(root.foreground, 1.5)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                }
-              }
-            }
-          }
-
-          Button {
-            width: parent.width
-            visible: !root.syncEnabled
-            text: "APPLY BOTH INDIVIDUAL COLORS"
-            iconText: "󰐕"
-            focusable: true
-            bordered: true
-            foreground: root.foreground
-            enabled: !root.busy && root.lightsOn
-              && root.validHex(motherboardField.text) && root.validHex(ramField.text)
-            onClicked: root.applyBoth()
-          }
-
-          PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader {
             text: "VISUAL COLOR PICKER"
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -1358,20 +1152,6 @@ Panel {
             fontFamily: root.fontFamily
           }
 
-          Button {
-            width: parent.width
-            text: root.isFavoriteColor(root.pickerHex)
-              ? "★ REMOVE " + root.displayHex(root.pickerHex) + " FROM FAVORITES"
-              : (root.favoriteColors.length >= root.savedColorLimit
-                  ? "☆ FAVORITES FULL · REMOVE ONE TO ADD ANOTHER"
-                  : "☆ ADD " + root.displayHex(root.pickerHex) + " TO FAVORITES")
-            focusable: true
-            bordered: true
-            foreground: root.foreground
-            enabled: !root.busy
-            onClicked: root.toggleFavoriteColor(root.pickerHex)
-          }
-
           Text {
             width: parent.width
             text: root.favoriteColors.length > 0
@@ -1524,9 +1304,38 @@ Panel {
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader {
-            text: "OMARCHY THEME SYNC"
+            text: "LIGHTING"
             foreground: root.foreground
             fontFamily: root.fontFamily
+          }
+
+          Toggle {
+            width: parent.width
+            label: root.lightsOn ? "TURN LIGHTS OFF" : "TURN LIGHTS ON"
+            description: root.lightsOn
+              ? "Turn off for the night and remember both current colors"
+              : "Restore motherboard " + root.displayHex(root.savedMotherboardColor)
+                + " · RAM " + root.displayHex(root.savedRamColor)
+            checked: root.lightsOn
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            enabled: !root.busy
+            opacity: enabled ? 1 : 0.55
+            onClicked: root.requestLightsEnabled(!root.lightsOn)
+          }
+
+          Toggle {
+            width: parent.width
+            label: "SYNC DEVICE COLORS"
+            description: root.syncEnabled
+              ? "One color controls the motherboard and both RAM DIMMs"
+              : "Choose motherboard and RAM colors individually"
+            checked: root.syncEnabled
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            enabled: !root.busy
+            opacity: enabled ? 1 : 0.55
+            onClicked: root.requestSyncEnabled(!root.syncEnabled)
           }
 
           Toggle {
@@ -1717,42 +1526,6 @@ Panel {
             font.bold: true
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
-          }
-
-          PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader {
-            text: "LIGHTING"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Toggle {
-            width: parent.width
-            label: root.lightsOn ? "TURN LIGHTS OFF" : "TURN LIGHTS ON"
-            description: root.lightsOn
-              ? "Turn off for the night and remember both current colors"
-              : "Restore motherboard " + root.displayHex(root.savedMotherboardColor)
-                + " · RAM " + root.displayHex(root.savedRamColor)
-            checked: root.lightsOn
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            enabled: !root.busy
-            opacity: enabled ? 1 : 0.55
-            onClicked: root.requestLightsEnabled(!root.lightsOn)
-          }
-
-          Toggle {
-            width: parent.width
-            label: "SYNC DEVICE COLORS"
-            description: root.syncEnabled
-              ? "One color controls the motherboard and both RAM DIMMs"
-              : "Choose motherboard and RAM colors individually"
-            checked: root.syncEnabled
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            enabled: !root.busy
-            opacity: enabled ? 1 : 0.55
-            onClicked: root.requestSyncEnabled(!root.syncEnabled)
           }
 
           PanelSeparator { foreground: root.foreground }

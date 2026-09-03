@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dlb.rgb",
   "name": "MSI 7E49 RGB Studio",
-  "version": "1.2.2",
+  "version": "1.2.4",
   "author": "dlb",
   "license": "MIT",
   "description": "Guarded motherboard and RAM lighting controls for the validated MSI MS-7E49 OpenRGB build.",

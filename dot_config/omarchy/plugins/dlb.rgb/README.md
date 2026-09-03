@@ -33,10 +33,10 @@ color. Both appearance choices, recent colors, and favorites are UI-only and
 persist across shell restarts in
 `~/.local/state/openrgb-msi7e49/appearance.json`.
 
-Sync mode presents one shared color and applies it to the motherboard and both
-RAM DIMMs together. Individual mode exposes separate motherboard and RAM-pair
-controls. Switching modes only stores a local preference and never accesses
-hardware.
+Sync mode lets the visual picker apply one shared color to the motherboard and
+both RAM DIMMs together. Individual mode uses picker target buttons to apply
+the motherboard or RAM pair separately. Switching modes only stores a local
+preference and never accesses hardware.
 
 `TURN LIGHTS OFF` turns both targets black for the night while retaining their
 last successful colors. It becomes `TURN LIGHTS ON` while dark and restores that
@@ -48,18 +48,18 @@ new palette only replaces the saved resume pair. Duplicate and stale theme
 requests are ignored. Automatic failures are retained for the panel's
 dismissible error banner and are never retried.
 
-Picker interactions update only the preview and hex fields. Hardware is
+Picker interactions update only the selected target's preview. Hardware is
 accessed only after an explicit Apply or lights-switch action.
 
 `SAVED COLORS` keeps the 5 most recently applied unique manual colors, newest
 first. Only a successful Apply adds to this history; picker drags, status
-refreshes, theme sync, and failed actions do not. Applying two Individual-mode
-colors records both. Favorites are stored separately, stay pinned when recent
-colors age out, and are also limited to 5. Select any swatch to load it into
-the active picker target (or both targets in Sync mode) without accessing
-hardware. Use the star button for the current preview, or right-click a swatch,
-to add or remove a favorite. Once all 5 favorite slots are used, remove one
-before adding another; favorites are never evicted automatically.
+refreshes, theme sync, and failed actions do not. Each successful
+Individual-mode apply records that target's color. Favorites are stored
+separately, stay pinned when recent colors age out, and are also limited to 5.
+Select any swatch to load it into the active picker target (or both targets in
+Sync mode) without accessing hardware. Right-click a swatch to add or remove a
+favorite. Once all 5 favorite slots are used, remove one before adding another;
+favorites are never evicted automatically.
 
 Hardware actions delegate to `~/.local/bin/openrgb-msi7e49-control`. That
 guarded command:
