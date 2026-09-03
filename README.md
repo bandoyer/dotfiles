@@ -5,7 +5,7 @@ managed with [Chezmoi](https://www.chezmoi.io/). I share it as a reference for
 other Omarchy users; it is not a turnkey distribution and several pieces are
 tied to my hardware and installed applications.
 
-The current snapshot was last validated with Omarchy `4.0.1-1`.
+The current snapshot was last validated with Omarchy `4.0.2-1`.
 
 ## Highlights
 
@@ -67,6 +67,9 @@ fork or disposable test account is the safest place to experiment.
   `~/.local/share/color/icc/PG32UCDM-Standard.icm`.
 - The RGB controls are allowlisted for the specific MSI motherboard and ENE
   memory devices documented in the plugin.
+- The tracked RGB state and appearance files are create-once seeds. Chezmoi
+  installs them only when missing, then leaves live color, power, history, and
+  favorite changes local to the workstation.
 - The audio widget and systemd service require Arctis Sound Manager commands
   installed separately as `asm-output-toggle`, `asm-gui`, and `asm-daemon`.
 - The Neru bindings and service require `neru-bin`. The tracked config is based
@@ -89,11 +92,13 @@ them only after their applications and dependencies have been installed.
 
 ## Save later changes
 
-Omarchy edits live files under the home directory. Copy changes to Chezmoi's
-source state, review both unstaged and staged content, then push:
+Omarchy edits live files under the home directory. Re-add only the files you
+intentionally changed; avoid a blanket `chezmoi re-add`, which can capture
+volatile application state. Then review both unstaged and staged content before
+pushing:
 
 ```bash
-chezmoi re-add
+chezmoi re-add ~/.bashrc ~/.config/PATH_TO_CHANGED_FILE
 chezmoi cd
 git status --short
 git diff

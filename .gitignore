@@ -1,6 +1,8 @@
 *.bak
 *.tmp
 *~
+**/__pycache__/
+**/*.pyc
 
 # Local audit output
 .gitleaks-report*
