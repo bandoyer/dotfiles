@@ -6,3 +6,26 @@ packages/**
 state/**
 **/__pycache__/**
 **/*.pyc
+
+# Hardware and heavyweight integrations are selected per machine during
+# `chezmoi init`. Paths here are target paths relative to the home directory.
+{{ if not .enableMsiRgb }}
+.config/openrgb-msi7e49
+.config/openrgb-msi7e49-motherboard
+.config/openrgb-msi7e49-ram
+.config/omarchy/plugins/dlb.rgb
+.local/bin/openrgb-msi7e49
+.local/bin/openrgb-msi7e49-control
+.local/bin/pc-rgb
+.local/share/applications/openrgb-msi7e49.desktop
+.local/state/openrgb-msi7e49
+{{ end }}
+{{ if not .enableArctis }}
+.config/omarchy/plugins/dlb.audio-output
+.config/systemd/user/arctis-manager.service
+.local/bin/asm-output-toggle
+.local/share/applications/ArctisManager.desktop
+{{ end }}
+{{ if not .enableLocalQwen }}
+.local/bin/qwen38-server
+{{ end }}

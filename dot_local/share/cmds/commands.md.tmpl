@@ -194,6 +194,7 @@ Run from the Rails application root.
 ```bash
 kamal deploy
 ```
+{{- if .enableMsiRgb }}
 
 ## PC RGB — Turn all lights off
 
@@ -216,16 +217,19 @@ Defaults to white. Add a six-digit RGB hex value for another color, such as
 ```bash
 pc-rgb on
 ```
+{{- end }}
 
 ## Dotfiles: Capture current settings
 
 Tags: dotfiles chezmoi backup settings config capture re-add save
 
-Copies the current versions of every managed live file into the local
-Chezmoi source repository. Review the resulting Git changes before committing.
+Copies intentionally selected, non-template live files into the local Chezmoi
+source repository. Add every changed path explicitly so volatile application
+state is not captured by accident. Use `chezmoi edit TARGET` for profile-backed
+templates. Review the resulting Git changes before committing.
 
 ```bash
-chezmoi re-add
+chezmoi re-add ~/.bashrc ~/.config/PATH_TO_CHANGED_FILE
 ```
 
 ## Dotfiles: Review captured changes

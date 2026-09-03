@@ -50,18 +50,22 @@
         {
           "id": "dlb.agents"
         },
+{{- if .enableMsiRgb }}
         {
           "id": "dlb.rgb"
         },
+{{- end }}
         {
           "id": "omarchy.bluetooth"
         },
         {
           "id": "omarchy.network"
         },
+{{- if .enableArctis }}
         {
           "id": "dlb.audio-output"
         },
+{{- end }}
         {
           "id": "omarchy.audio"
         },

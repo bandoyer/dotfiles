@@ -1,0 +1,11 @@
+{{- $machineType := promptChoiceOnce . "machineType" "Machine type" (list "desktop" "laptop") "laptop" -}}
+{{- $desktopDefault := eq $machineType "desktop" -}}
+{{- $enableMsiRgb := promptBoolOnce . "enableMsiRgb" "Enable MSI MS-7E49 RGB integration" $desktopDefault -}}
+{{- $enableArctis := promptBoolOnce . "enableArctis" "Enable Arctis Sound Manager integration" $desktopDefault -}}
+{{- $enableLocalQwen := promptBoolOnce . "enableLocalQwen" "Enable local Qwen server launcher" $desktopDefault -}}
+
+[data]
+machineType = {{ $machineType | quote }}
+enableMsiRgb = {{ $enableMsiRgb }}
+enableArctis = {{ $enableArctis }}
+enableLocalQwen = {{ $enableLocalQwen }}

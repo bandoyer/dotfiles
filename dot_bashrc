@@ -16,7 +16,7 @@ source "$OMARCHY_PATH/default/bash/rc"
 # .NET global tools (crap4net, dotnet-stryker, ...)
 export PATH="$PATH:$HOME/.dotnet/tools"
 
-. "$HOME/.local/share/../bin/env"
+[[ -r "$HOME/.local/bin/env" ]] && source "$HOME/.local/bin/env"
 
 # Personal command recipe palette (Alt-S)
 [[ -r "$HOME/.local/share/cmds/bash-integration.bash" ]] && source "$HOME/.local/share/cmds/bash-integration.bash"

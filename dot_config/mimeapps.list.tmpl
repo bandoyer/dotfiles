@@ -10,7 +10,9 @@ x-scheme-handler/jetbrains=jetbrainsd.desktop
 text/plain=jetbrains-rider.desktop
 text/markdown=code.desktop
 x-scheme-handler/codex=chatgpt.desktop
+{{- if .enableArctis }}
 x-scheme-handler/arctis-asm=ArctisManager.desktop
+{{- end }}
 x-scheme-handler/grokbot=grok-bot.desktop
 x-scheme-handler/sand=grok-bot.desktop
 

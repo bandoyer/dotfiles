@@ -37,13 +37,30 @@ Chezmoi encodes destination attributes in source names. For example,
 permissions removed. `private_` controls destination permissions; it does not
 hide or encrypt repository content.
 
+## Machine profiles
+
+`.chezmoi.toml.tmpl` creates a local, untracked Chezmoi configuration during
+`chezmoi init`. It asks whether the machine is a desktop or laptop and whether
+to enable three optional integrations:
+
+| Setting | Desktop default | Laptop default | Controls |
+|---|---:|---:|---|
+| `machineType` | `desktop` | `laptop` | Desktop monitor/ICC and SlimBlade overrides versus an automatic laptop display |
+| `enableMsiRgb` | on | off | MSI/OpenRGB configs, commands, desktop entry, state seeds, shell plugin, and command recipes |
+| `enableArctis` | on | off | Arctis helper, service, desktop/MIME integration, autostart, and shell widget |
+| `enableLocalQwen` | on | off | Local Qwen server launcher |
+
+The generated values live only in `~/.config/chezmoi/chezmoi.toml`. To revisit
+the questions later, run `chezmoi init --prompt`, inspect `chezmoi diff`, and
+then apply deliberately.
+
 ## Inspect or try it
 
 Install Chezmoi, clone the source state, and inspect the proposed changes
 before applying anything:
 
 ```bash
-sudo pacman -S chezmoi
+omarchy pkg add chezmoi
 chezmoi init https://github.com/bandoyer/dotfiles.git
 chezmoi diff
 ```
@@ -59,6 +76,8 @@ fork or disposable test account is the safest place to experiment.
 
 ## Machine-specific pieces
 
+- Desktop/laptop rendering and optional integrations are controlled by the
+  local machine profile described above.
 - The OpenRGB launchers expect a locally installed, checksum-pinned build under
   `~/.local/opt/openrgb-msi7e49/`. The binary is intentionally not committed,
   and the launchers refuse to run if it is absent or does not match.
@@ -114,6 +133,11 @@ exit
 `chezmoi add PATH_TO_FILE` when intentionally adding a new file. Run a secret
 scanner such as Gitleaks against the worktree and Git history before publishing
 newly added configuration.
+
+For profile-backed files such as `monitors.lua`, `input.lua`, `autostart.lua`,
+`shell.json`, `mimeapps.list`, and the command catalog, use
+`chezmoi edit TARGET` and update the appropriate template branch. Do not replace
+those templates by re-adding one machine's rendered file.
 
 Use `chezmoi update -v` to pull and apply changes already pushed from another
 machine.
