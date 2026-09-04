@@ -7,7 +7,7 @@ readonly maximum_workspace_id=2147483647
 usage() {
   cat <<'EOF'
 Usage:
-  workspace-swap FROM TO
+  workspace-swap WORKSPACE_A WORKSPACE_B
 
 Swap two numbered Hyprland workspaces by exchanging their workspace IDs. This
 keeps each workspace's windows and tiling layout together.
@@ -35,7 +35,7 @@ valid_workspace_number() {
 }
 
 if ! valid_workspace_number "$1" || ! valid_workspace_number "$2"; then
-  printf 'workspace-swap: FROM and TO must be workspace numbers from 1 to %d\n' \
+  printf 'workspace-swap: WORKSPACE_A and WORKSPACE_B must be workspace numbers from 1 to %d\n' \
     "$maximum_workspace_id" >&2
   exit 2
 fi
@@ -44,11 +44,11 @@ first_workspace=$((10#$1))
 second_workspace=$((10#$2))
 
 if (( first_workspace == second_workspace )); then
-  printf 'workspace-swap: FROM and TO must be different workspaces\n' >&2
+  printf 'workspace-swap: WORKSPACE_A and WORKSPACE_B must be different workspaces\n' >&2
   exit 2
 fi
 
-for dependency in hyprctl jq; do
+for dependency in hyprctl jq omarchy; do
   if ! command -v "$dependency" >/dev/null 2>&1; then
     printf 'workspace-swap: required command not found: %s\n' "$dependency" >&2
     exit 1
@@ -123,6 +123,12 @@ end
   printf 'workspace-swap: Hyprland could not swap workspaces %d and %d\n' \
     "$first_workspace" "$second_workspace" >&2
   printf '%s\n' "$swap_result" >&2
+  exit 1
+fi
+
+if ! omarchy restart shell; then
+  printf 'workspace-swap: workspaces %d and %d were swapped, but the Omarchy shell could not be restarted\n' \
+    "$first_workspace" "$second_workspace" >&2
   exit 1
 fi
 

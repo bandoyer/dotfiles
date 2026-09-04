@@ -145,6 +145,7 @@ sudo
 sushi
 swh-plugins
 system-config-printer
+t3code-bin
 tailscale
 tensaku
 tesseract

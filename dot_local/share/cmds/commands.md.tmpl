@@ -341,12 +341,14 @@ neru-rescan
 
 ## Omarchy — Swap two workspaces
 
-Tags: omarchy hyprland workspace desktop move swap exchange renumber all windows from to
+Tags: omarchy hyprland workspace desktop move swap exchange renumber all windows pair
 
-Exchanges the IDs of `FROM` and `TO`, keeping each workspace's windows, focus,
-and tiling layout together. If one side is empty, the existing workspace simply
-moves to that number.
+Type the two workspace numbers after the inserted command. It exchanges their
+IDs while keeping each workspace's windows, focus, and tiling layout together.
+If one side is empty, the existing workspace simply moves to that number. The
+helper restarts the Omarchy shell afterward so the workspace bar immediately
+reflects the new numbering.
 
 ```bash
-workspace-swap FROM TO
+workspace-swap{{ " " }}
 ```
