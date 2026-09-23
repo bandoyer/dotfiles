@@ -41,8 +41,8 @@ fd
 ffmpegthumbnailer
 foot
 fzf
-ggml-cpu
 ggml-cuda
+ghidra
 ghostty
 git
 glab
@@ -53,6 +53,8 @@ gpu-screen-recorder
 grim
 grok-bot
 gst-plugin-pipewire
+gvfs-afc
+gvfs-gphoto2
 gvfs-mtp
 gvfs-nfs
 gvfs-smb
@@ -83,12 +85,15 @@ limine
 linux
 linux-firmware
 linux-headers
+linux-omarchy
+linux-omarchy-headers
 llama-cpp
 llvm
 localsend
 lua51
 luarocks
 man-db
+man-pages
 mariadb-libs
 mise-bin
 mkinitcpio
@@ -137,9 +142,12 @@ quickshell
 ripgrep
 ruby
 sddm
+shellcheck
 slurp
 socat
+sshfs
 starship
+strace
 sublime-text-4
 sudo
 sushi
@@ -162,6 +170,7 @@ udiskie
 ufw
 ufw-docker
 usage
+usbmuxd
 uwsm
 visual-studio-code-bin
 voxtype-bin
@@ -178,6 +187,7 @@ xdg-terminal-exec
 xournalpp
 yaru-icon-theme
 yay
+ydotool
 yt-dlp
 zbar
 zoxide

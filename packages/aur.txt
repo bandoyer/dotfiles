@@ -1,5 +1,8 @@
+coolercontrol-bin
+flea-bin
 google-chrome
 input-remapper-git
+nct6687d-dkms-git
 neru-bin
 omnissa-horizon-client-next
 rider

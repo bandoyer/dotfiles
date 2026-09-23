@@ -3,6 +3,7 @@ bt-agent.service
 filter-chain.service
 gnome-keyring-daemon.socket
 neru.service
+notes-backup.timer
 omarchy-crash-watch.service
 omarchy-fcitx5.service
 omarchy-lock-watchdog.service
