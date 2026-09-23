@@ -5,7 +5,7 @@ managed with [Chezmoi](https://www.chezmoi.io/). I share it as a reference for
 other Omarchy users; it is not a turnkey distribution and several pieces are
 tied to my hardware and installed applications.
 
-The current snapshot was last validated with Omarchy `4.0.2-1`.
+The current snapshot was last validated with Omarchy `4.0.4-1`.
 
 ## Highlights
 
@@ -98,6 +98,18 @@ fork or disposable test account is the safest place to experiment.
   HEY CLI. Install the plugin separately with
   `omarchy plugin add https://github.com/basecamp/omarchy-hey-plugin.git --enable`;
   credentials remain outside Chezmoi.
+- The workspace-layout bar widget, the swap recipe, and
+  `~/.config/omarchy/workspace-layout.json` require the public
+  [`bjarneo.workspace-layout`](https://github.com/bjarneo/omarchy-workspace-layout)
+  plugin. Install it separately with
+  `omarchy plugin add https://github.com/bjarneo/omarchy-workspace-layout.git --enable`;
+  the plugin regenerates `~/.config/hypr/omarchy-workspace-layout.lua`, which
+  `hyprland.lua` loads only when present.
+- The file-manager bindings and the directory MIME handler require `flea-bin`.
+  `flea --default` and `flea --picker` own their marked blocks in
+  `bindings.lua`.
+- `notes-backup` and its hourly timer commit and push a private notes clone at
+  `~/Work/notes`; clone that repository before enabling the timer.
 - The `qwen38-server` helper expects a local Qwen GGUF, chat template, and API
   key file under `~/.local/`; none of those assets or credentials are tracked.
 - The lock watchdog is a temporary mitigation for

@@ -5,6 +5,9 @@ config-file = ?"~/.local/state/omarchy/current/theme/ghostty.conf"
 font-family = "JetBrainsMono Nerd Font"
 font-style = Regular
 font-size = 12
+font-codepoint-map = "U+E908=Omarchy Prompt Compact Alt"
+# The ↳ arrow, which JetBrainsMono lacks, drawn from a monospace.
+font-codepoint-map = "U+21B3=Adwaita Mono"
 
 # Window
 window-theme = ghostty

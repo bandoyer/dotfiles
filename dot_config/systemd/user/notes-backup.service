@@ -1,0 +1,7 @@
+[Unit]
+Description=Commit and push ~/Work/notes
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/notes-backup

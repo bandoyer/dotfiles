@@ -28,9 +28,24 @@
 -- o.bind("SUPER + H", nil, "voxtype record toggle")
 -- o.bind("SUPER + PERIOD", nil, "omarchy-shell shell toggle omarchy.emojis")
 
+-- Preview a fixed, photo-inspired five-pane layout on the current workspace.
+local ultrawide_layout = require("hypr.ultrawide_layout")
+o.bind("SUPER + SHIFT + L", "Toggle ultrawide five-pane layout", ultrawide_layout.toggle)
+
 -- Neru mouseless navigation. These compositor bindings avoid granting Neru
 -- blanket access to /dev/input while keeping the four modes on one key family.
 o.bind("SUPER + semicolon", "Neru: click interface hint", "/usr/bin/neru hints --action left_click")
 o.bind("SUPER + SHIFT + semicolon", "Neru: recursive grid", "/usr/bin/neru recursive_grid")
 o.bind("SUPER + ALT + semicolon", "Neru: click OCR text hint", "/usr/bin/neru hints --strategy vision --action left_click")
 o.bind("SUPER + CTRL + semicolon", "Neru: scroll mode", "/usr/bin/neru scroll --toggle")
+
+-- flea --default: begin. Written by `flea --default`; `flea --default off` removes the block whole.
+hl.unbind("SUPER + SHIFT + F")
+o.bind("SUPER + SHIFT + F", "File manager", { launch = 'flea --gui' })
+hl.unbind("SUPER + ALT + SHIFT + F")
+o.bind("SUPER + ALT + SHIFT + F", "File manager (cwd)", { launch = 'flea --gui "$(omarchy-cmd-terminal-cwd)"' })
+-- flea --default: end.
+
+-- flea --picker: begin. Written by `flea --picker`; `flea --picker off` removes the block whole.
+o.window("com.thisisgm.flea.picker", { tag = "+floating-window" })
+-- flea --picker: end.
