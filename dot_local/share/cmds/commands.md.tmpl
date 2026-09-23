@@ -5,50 +5,6 @@ terminal to insert a selected command at the prompt. Commands are never run by
 the picker. Replace uppercase placeholders before executing them, and never
 store passwords, tokens, or other secrets here.
 
-## Codex Remote: Start the shared host
-
-Tags: codex remote phone mobile shared host daemon start reboot
-
-Run this after a reboot before opening a shared session from the phone or CLI.
-It starts from the home directory so the daemon does not inherit a project.
-
-```bash
-(cd "$HOME" && CODEX_HOME="$HOME/.codex-remote-lab" codex remote-control start)
-```
-
-## Codex Remote: Choose a shared session
-
-Tags: codex remote phone mobile shared session resume picker choose
-
-Run from the project directory. Opens a picker containing shared sessions for
-that project.
-
-```bash
-CODEX_HOME="$HOME/.codex-remote-lab" codex resume --remote unix:// -C "$PWD"
-```
-
-## Codex Remote: Resume the latest shared session
-
-Tags: codex remote phone mobile shared session resume latest last
-
-Run from the project directory. Resumes its most recent shared session without
-opening the picker.
-
-```bash
-CODEX_HOME="$HOME/.codex-remote-lab" codex resume --remote unix:// -C "$PWD" --last
-```
-
-## Codex Remote: Start a new shared session
-
-Tags: codex remote phone mobile shared session new start
-
-Run from the project directory. The new session will be available from both
-the phone and CLI.
-
-```bash
-CODEX_HOME="$HOME/.codex-remote-lab" codex --remote unix:// -C "$PWD"
-```
-
 ## DigitalOcean — Check account balance
 
 Tags: do digitalocean billing balance account money
@@ -343,12 +299,11 @@ neru-rescan
 
 Tags: omarchy hyprland workspace desktop move swap exchange renumber all windows pair
 
-Type the two workspace numbers after the inserted command. It exchanges their
-IDs while keeping each workspace's windows, focus, and tiling layout together.
-If one side is empty, the existing workspace simply moves to that number. The
-helper restarts the Omarchy shell afterward so the workspace bar immediately
-reflects the new numbering.
+Type the two workspace numbers after the inserted command. The workspaces trade
+numbers: windows, tiling, assigned layouts, and pinned apps go with their
+workspace. If one side does not exist yet, the other simply takes its number.
+Requires the `bjarneo.workspace-layout` Omarchy plugin.
 
 ```bash
-workspace-swap{{ " " }}
+omarchy-shell workspace-layout swap{{ " " }}
 ```

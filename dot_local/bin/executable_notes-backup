@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Hourly backup of ~/Work/notes: snapshot Claude memory + settings, commit, push.
+set -euo pipefail
+NOTES="$HOME/Work/notes"
+cd "$NOTES"
+mkdir -p claude-memory
+rsync -a --delete "$HOME/.claude/projects/-home-dlb/memory/" claude-memory/memory/
+[ -f "$HOME/.claude/settings.json" ] && cp "$HOME/.claude/settings.json" claude-memory/settings.json
+git add -A
+if ! git diff --cached --quiet; then
+  git commit -q -m "auto: $(date -u +%Y-%m-%dT%H:%MZ)"
+fi
+if git remote get-url origin >/dev/null 2>&1; then
+  git push -q origin HEAD 2>/dev/null || git push -q -u origin main
+fi

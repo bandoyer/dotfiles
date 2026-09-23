@@ -25,14 +25,7 @@ export PATH="$PATH:$HOME/.dotnet/tools"
 export PATH="$HOME/.local/bin:$PATH"
 # <<< Codex installer <<<
 
-# Keep `cy` sessions on the shared Codex Remote host so they can be continued
-# from this terminal, ChatGPT Remote on mobile, or another supported client.
-# Match Omarchy's stock `cy` safety model: workspace-write with auto-review.
-unalias cy 2>/dev/null
-cy() {
-  local codex_remote_home="$HOME/.codex-remote-lab"
-
-  CODEX_HOME="$codex_remote_home" codex remote-control start --json >/dev/null || return
-  CODEX_HOME="$codex_remote_home" codex --remote unix:// \
-    --approve-for-me -C "$PWD" "$@"
-}
+# Restore the standard local shortcut when reloading an existing shell.
+unset -f cy 2>/dev/null
+alias cy='codex --approve-for-me'
+[ -f ~/.config/typesafe/env ] && . ~/.config/typesafe/env
