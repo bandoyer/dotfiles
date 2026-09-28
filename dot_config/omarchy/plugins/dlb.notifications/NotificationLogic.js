@@ -121,6 +121,12 @@ function shouldBypassDnd(notification, criticalUrgency) {
   return appName === "notify-send" && notification && notification.urgency === criticalUrgency
 }
 
+// Omarchy's reminder scheduler sends its final alert with exactly this summary;
+// the "Reminder set" confirmation shown when a reminder is created differs.
+function isReminderAlert(summary) {
+  return String(summary || "").trim() === "Reminder"
+}
+
 function isEphemeralApp(appName) {
   var name = String(appName || "")
   return name === "notify-send" || name === "omarchy-action"
@@ -453,6 +459,7 @@ if (typeof module !== "undefined") {
     styledBody: styledBody,
     summaryStartsWithGlyph: summaryStartsWithGlyph,
     shouldBypassDnd: shouldBypassDnd,
+    isReminderAlert: isReminderAlert,
     isEphemeralApp: isEphemeralApp,
     stringHint: stringHint,
     glyphFromHints: glyphFromHints,

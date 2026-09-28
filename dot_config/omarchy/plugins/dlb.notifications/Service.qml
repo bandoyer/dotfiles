@@ -100,10 +100,9 @@ Item {
   readonly property int maxPopupDuration: 30000
 
   function durationFor(summary, urgency, expireTimeout) {
-    // Reminder alerts should require an explicit acknowledgement. Omarchy's
-    // reminder scheduler sends the final alert with this exact summary; the
+    // Reminder alerts should require an explicit acknowledgement; the
     // separate "Reminder set" confirmation keeps the normal timeout.
-    if (String(summary || "").trim() === "Reminder") return 0
+    if (NotificationLogic.isReminderAlert(summary)) return 0
 
     switch (urgency) {
     case NotificationUrgency.Critical:
@@ -187,6 +186,8 @@ Item {
       notification.tracked = false
       return
     }
+
+    if (NotificationLogic.isReminderAlert(snapshot.summary)) playReminderChime()
 
     persistPopupFile(snapshot)
     watchForUpdates(notification, snapshot)
@@ -413,6 +414,21 @@ Item {
   }
 
   Process { id: focusAppProc; running: false }
+
+  // A soft chime when a reminder goes off. Reminders silenced by
+  // do-not-disturb never reach this point, so they stay silent too.
+  readonly property string reminderChimePath: "/usr/share/sounds/freedesktop/stereo/complete.oga"
+
+  function playReminderChime() {
+    // Reminders that fire together share one chime: a running player is left alone.
+    reminderChimeProc.running = true
+  }
+
+  Process {
+    id: reminderChimeProc
+    command: ["pw-play", service.reminderChimePath]
+    running: false
+  }
 
   Process {
     id: ensureDirsProc
