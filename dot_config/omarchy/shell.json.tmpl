@@ -51,7 +51,12 @@
           "id": "omarchy.tailscale"
         },
         {
-          "id": "dlb.agents"
+          "id": "dlb.agents",
+          "providers": {
+            "fireworks": {
+              "enabled": false
+            }
+          }
         },
 {{- if .enableMsiRgb }}
         {

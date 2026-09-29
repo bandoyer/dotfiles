@@ -14,14 +14,15 @@ Item {
 
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string usageDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/omarchy/agents/usage"
-  readonly property string localUpdater: {
-    var resolved = String(Qt.resolvedUrl("scripts/update"))
+  readonly property string localUpdater: scriptPath("update")
+
+  function scriptPath(name) {
+    var resolved = String(Qt.resolvedUrl("scripts/" + name))
     return resolved.indexOf("file://") === 0 ? decodeURIComponent(resolved.slice(7)) : resolved
   }
 
   // ------------------------------------------------------------- discovery
 
-  readonly property var supportedProviderIds: ({ claude: true, codex: true, grok: true })
   property var agentIds: []
   property var agents: []
   property int dataRevision: 0
@@ -114,6 +115,8 @@ Item {
 
   Component.onCompleted: {
     rescanAgents()
+    reloadCatalog()
+    reloadAccounts()
     if (syncConfigured()) scheduleSync()
   }
 
@@ -135,6 +138,8 @@ Item {
     running: false
     onExited: {
       root.rescanAgents()
+      root.reloadCatalog()
+      root.reloadAccounts()
       if (root.pendingUpdateKind !== "") {
         var kind = root.pendingUpdateKind
         root.pendingUpdateKind = ""
@@ -181,6 +186,131 @@ Item {
   // recent scans in this mode.
   function refreshLimits() { runUpdate("limits") }
 
+  // --------------------------------------------------------------- catalog
+
+  // Every provider a collector exists for, switched on or not, as reported by
+  // scripts/providers. The panel's provider switches list these, and a stale
+  // record whose collector has since disappeared no longer earns a tab.
+  property var providerCatalog: []
+  property bool catalogLoaded: false
+  property string providerToggleError: ""
+
+  Process {
+    id: catalogProcess
+    running: false
+    command: ["bash", root.scriptPath("providers"), "list", "--json"]
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyCatalog(text)
+    }
+  }
+
+  function reloadCatalog() {
+    if (!catalogProcess.running) catalogProcess.running = true
+  }
+
+  function applyCatalog(output) {
+    try {
+      var parsed = JSON.parse(String(output || "[]"))
+      if (!Array.isArray(parsed)) return
+      var before = enabledIds(providerCatalog)
+      if (JSON.stringify(parsed) !== JSON.stringify(providerCatalog)) providerCatalog = parsed
+      // A provider switched back on regenerates at once rather than waiting
+      // out the refresh interval.
+      if (catalogLoaded && enabledIds(parsed) !== before) runUpdate("normal")
+      catalogLoaded = true
+    } catch (e) {
+      console.warn("agents", "Ignoring bad provider catalog", e)
+    }
+  }
+
+  function catalogEntry(id) {
+    for (var i = 0; i < providerCatalog.length; i++)
+      if (providerCatalog[i].id === id) return providerCatalog[i]
+    return null
+  }
+
+  function enabledIds(catalog) {
+    return catalog.filter(function(entry) { return entry.enabled }).map(function(entry) { return entry.id }).join(",")
+  }
+
+  Process {
+    id: providerToggleProcess
+    running: false
+    onExited: function(exitCode) { root.reloadCatalog() }
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.providerToggleError = text.trim()
+    }
+  }
+
+  function setProviderEnabled(id, enabled) {
+    if (providerToggleProcess.running) return
+    providerToggleError = ""
+    providerToggleProcess.command = ["bash", root.scriptPath("providers"), enabled ? "enable" : "disable", id]
+    providerToggleProcess.running = true
+  }
+
+  // -------------------------------------------------------------- accounts
+
+  // Saved Claude Code logins from scripts/claude-account. Switching swaps the
+  // live login and forces a Claude refresh so the limits follow the account.
+  property var claudeAccounts: []
+  property bool claudeLoginUnsaved: false
+  property string switchingAccount: ""
+  property string accountError: ""
+
+  Process {
+    id: accountsProcess
+    running: false
+    command: [root.scriptPath("claude-account"), "list", "--json"]
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyAccounts(text)
+    }
+  }
+
+  function reloadAccounts() {
+    if (!accountsProcess.running) accountsProcess.running = true
+  }
+
+  function applyAccounts(output) {
+    try {
+      var parsed = JSON.parse(String(output || "{}"))
+      var accounts = Array.isArray(parsed.accounts) ? parsed.accounts : []
+      if (JSON.stringify(accounts) !== JSON.stringify(claudeAccounts)) claudeAccounts = accounts
+      claudeLoginUnsaved = parsed.unsaved === true
+    } catch (e) {
+      console.warn("agents", "Ignoring bad account listing", e)
+    }
+  }
+
+  Process {
+    id: switchProcess
+    running: false
+    onExited: function(exitCode) {
+      root.switchingAccount = ""
+      root.reloadAccounts()
+      if (exitCode === 0) root.runUpdate("force", ["claude"])
+    }
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.accountError = text.trim().replace(/^claude-account: /, "")
+    }
+  }
+
+  function switchClaudeAccount(name) {
+    if (switchProcess.running || name === "") return
+    accountError = ""
+    switchingAccount = name
+    switchProcess.command = [root.scriptPath("claude-account"), "use", name, "--no-refresh", "--quiet"]
+    switchProcess.running = true
+  }
+
   // ------------------------------------------------------------- providers
 
   // An agent earns a place in the bar and the panel by being switched on in
@@ -190,6 +320,7 @@ Item {
   property var enabledProviders: {
     var rev = dataRevision
     var syncRev = syncRevision
+    var catalog = providerCatalog
     var result = []
     var localIds = {}
     for (var i = 0; i < agents.length; i++) {
@@ -214,8 +345,13 @@ Item {
     return result
   }
 
+  // The catalog reads shell.json fresh, so it wins over `settings`, which
+  // does not follow edits made while the widget is loaded.
   function providerEnabled(id) {
-    if (!supportedProviderIds[id]) return false
+    if (catalogLoaded) {
+      var entry = catalogEntry(id)
+      return !!entry && entry.enabled
+    }
     if (!settings || !settings.providers || !settings.providers[id]) return true
     return settings.providers[id].enabled !== false
   }

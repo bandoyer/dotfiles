@@ -1,0 +1,132 @@
+#!/bin/bash
+# omarchy:summary=List, enable, and disable the providers in the dlb.agents panel
+
+set -euo pipefail
+
+# A provider is any `omarchy-agent-usage-<id>` collector: this plugin's own
+# copies in scripts/ first, then the ones Omarchy ships. Dropping a new
+# collector into scripts/ adds a provider; enabling and disabling only flips
+# `providers.<id>.enabled` in this widget's entry in shell.json.
+
+script_dir=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+packaged_dir=/usr/share/omarchy/bin
+widget_id=dlb.agents
+usage_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
+shell_json="$HOME/.config/omarchy/shell.json"
+
+usage() {
+  cat <<EOF
+Usage: ${0##*/} [list [--json] | ids | path <id> | enable <id>... | disable <id>... | toggle <id>]
+
+Providers are discovered from omarchy-agent-usage-<id> collectors in
+  $script_dir
+  $packaged_dir
+Disabled providers are hidden from the panel and skipped on refresh.
+EOF
+}
+
+fail() {
+  echo "providers: $*" >&2
+  exit 1
+}
+
+# id<TAB>source<TAB>path, local collectors shadowing packaged ones.
+discover() {
+  declare -A seen=()
+  local dir source file id
+  for dir in "$script_dir" "$packaged_dir"; do
+    [[ $dir == "$script_dir" ]] && source=local || source=packaged
+    for file in "$dir"/omarchy-agent-usage-*; do
+      [[ -f $file && -x $file ]] || continue
+      id=${file##*/omarchy-agent-usage-}
+      [[ $id == update || -n ${seen[$id]:-} ]] && continue
+      seen[$id]=1
+      printf '%s\t%s\t%s\n' "$id" "$source" "$file"
+    done
+  done | sort
+}
+
+settings_providers() {
+  jq -c --arg id "$widget_id" \
+    'first(.. | objects | select(.id? == $id)) | .providers // {}' "$shell_json" 2>/dev/null || echo '{}'
+}
+
+list_json() {
+  local records f
+  # What the last refresh learned, so the list can say "not signed in" or
+  # "no usage yet" without running every collector.
+  records=$(
+    for f in "$usage_dir"/*.json; do
+      [[ -r $f ]] && jq -c '{id, name, ready: (.ready == true), status: (.usageStatusText // "")}' "$f" 2>/dev/null
+    done | jq -s -c 'map({key: .id, value: .}) | from_entries'
+  )
+  discover | jq -R -s -c --argjson settings "$(settings_providers)" --argjson records "$records" '
+    split("\n") | map(select(length > 0) | split("\t") | .[0] as $id | {
+      id: $id,
+      name: ($records[$id].name // (($id | .[:1] | ascii_upcase) + ($id | .[1:]))),
+      source: .[1],
+      enabled: ($settings[$id].enabled != false),
+      ready: ($records[$id].ready // false),
+      status: ($records[$id].status // "")
+    })'
+}
+
+cmd_list() {
+  local json
+  json=$(list_json)
+  if [[ ${1:-} == --json ]]; then
+    echo "$json"
+    return
+  fi
+  jq -r '.[] | [
+      (if .enabled then "on " else "off" end),
+      .id,
+      .source,
+      (if .status != "" then .status elif .ready then "ready" else "" end)
+    ] | @tsv' <<<"$json" | column -t -s $'\t'
+}
+
+known() {
+  discover | cut -f1 | grep -qxF -- "$1"
+}
+
+set_enabled() {
+  local value="$1" providers id
+  shift
+  (( $# > 0 )) || fail "name at least one provider (see: providers list)"
+  providers=$(settings_providers)
+  for id in "$@"; do
+    known "$id" || fail "unknown provider '$id' (have: $(discover | cut -f1 | paste -sd' '))"
+    providers=$(jq -c --arg id "$id" --argjson on "$value" '.[$id] = ((.[$id] // {}) + {enabled: $on})' <<<"$providers")
+  done
+  omarchy-bar set "$widget_id" providers "$providers" --json >/dev/null
+  omarchy-shell -q omarchy.agents reloadProviders >/dev/null 2>&1 || true
+  for id in "$@"; do
+    echo "$id: $([[ $value == true ]] && echo enabled || echo disabled)"
+  done
+}
+
+cmd_toggle() {
+  local id="${1:-}"
+  [[ -n $id ]] || fail "toggle needs a provider id"
+  if [[ $(settings_providers | jq -r --arg id "$id" '.[$id].enabled != false') == true ]]; then
+    set_enabled false "$id"
+  else
+    set_enabled true "$id"
+  fi
+}
+
+case "${1:-list}" in
+  list | ls) shift || true; cmd_list "$@" ;;
+  ids) discover | cut -f1 ;;
+  discover) discover ;;
+  path)
+    [[ -n ${2:-} ]] || fail "path needs a provider id"
+    discover | awk -F'\t' -v id="$2" '$1 == id { print $3; found = 1 } END { exit !found }'
+    ;;
+  enable | add) shift; set_enabled true "$@" ;;
+  disable | remove | rm) shift; set_enabled false "$@" ;;
+  toggle) shift; cmd_toggle "$@" ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

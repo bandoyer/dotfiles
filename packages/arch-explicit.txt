@@ -132,6 +132,7 @@ pipewire-pulse
 plocate
 postgresql-libs
 power-profiles-daemon
+python-cryptography
 python-gobject
 python-poetry-core
 python-secretstorage

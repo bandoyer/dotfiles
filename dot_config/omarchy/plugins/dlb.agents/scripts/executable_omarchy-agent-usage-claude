@@ -102,10 +102,17 @@ def browser_cookie_databases() -> list[tuple[Path, str]]:
   if configured:
     application = os.environ.get("CLAUDE_BROWSER_SAFE_STORAGE_APP") or "chromium"
     return [(Path(configured).expanduser(), application)]
-  return [
-    (Path.home() / ".config/chromium/Default/Cookies", "chromium"),
-    (Path.home() / ".config/google-chrome/Default/Cookies", "chrome"),
-  ]
+  # Every profile, Default first: with two Claude accounts, each one is
+  # usually signed in to claude.ai from its own browser profile.
+  databases = []
+  for root, application in (
+    (Path.home() / ".config/chromium", "chromium"),
+    (Path.home() / ".config/google-chrome", "chrome"),
+  ):
+    paths = list(root.glob("*/Cookies")) + list(root.glob("*/Network/Cookies"))
+    paths.sort(key=lambda path: (path.relative_to(root).parts[0] != "Default", str(path)))
+    databases.extend((path, application) for path in paths)
+  return databases
 
 
 def decrypt_chromium_cookie(host: str, encrypted: bytes, application: str) -> str:
@@ -116,7 +123,14 @@ def decrypt_chromium_cookie(host: str, encrypted: bytes, application: str) -> st
     return ""
   try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
+  except ImportError:
+    # Without it the renewal date silently degrades to "unavailable"; say why
+    # in the shell log instead.
+    print("omarchy-agent-usage-claude: python-cryptography is not installed, so the "
+          "claude.ai session cookie cannot be read for renewal dates "
+          "(omarchy pkg add python-cryptography)", file=sys.stderr)
+    return ""
+  try:
     secret = subprocess.run(
       ["secret-tool", "lookup", "application", application],
       check=True,
@@ -128,7 +142,7 @@ def decrypt_chromium_cookie(host: str, encrypted: bytes, application: str) -> st
     key = hashlib.pbkdf2_hmac("sha1", secret, b"saltysalt", 1, 16)
     decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
     plaintext = decryptor.update(encrypted[3:]) + decryptor.finalize()
-  except (ImportError, OSError, subprocess.SubprocessError, ValueError):
+  except (OSError, subprocess.SubprocessError, ValueError):
     return ""
 
   padding = plaintext[-1] if plaintext else 0
@@ -147,7 +161,8 @@ def decrypt_chromium_cookie(host: str, encrypted: bytes, application: str) -> st
   return value if value.startswith("sk-ant-") else ""
 
 
-def claude_session_cookie() -> tuple[str, str]:
+def claude_session_cookies() -> list[tuple[str, str]]:
+  """The freshest claude.ai session cookie from each browser profile."""
   chrome_now = int((time.time() + CHROME_EPOCH_OFFSET_SECONDS) * 1_000_000)
   query = """
     SELECT host_key, name, value, encrypted_value
@@ -158,6 +173,7 @@ def claude_session_cookie() -> tuple[str, str]:
     ORDER BY CASE name WHEN 'sessionKeyV3' THEN 0 ELSE 1 END,
              last_update_utc DESC
   """
+  cookies = []
   for path, application in browser_cookie_databases():
     if not path.is_file():
       continue
@@ -171,8 +187,9 @@ def claude_session_cookie() -> tuple[str, str]:
       if not value:
         value = decrypt_chromium_cookie(str(host), bytes(encrypted or b""), application)
       if value.startswith("sk-ant-"):
-        return str(name), value
-  return "", ""
+        cookies.append((str(name), value))
+        break
+  return cookies
 
 
 def fetch_subscription_details(organization: str, cookie_name: str, cookie_value: str) -> dict[str, Any]:
@@ -235,6 +252,18 @@ def subscription_from_profile(
   return subscription(status, source="anthropic-profile" if profile else "claude-credentials")
 
 
+def cached_subscriptions() -> dict[str, dict[str, Any]]:
+  """Per-account display records, keyed by a hash of the organization UUID."""
+  payload = read_cache(cache_path("claude-subscription.json"))
+  accounts = payload.get("accounts")
+  if isinstance(accounts, dict):
+    return {k: v for k, v in accounts.items() if isinstance(v, dict)}
+  # Older caches held a single account.
+  if payload.get("accountKey") and isinstance(payload.get("subscription"), dict):
+    return {str(payload["accountKey"]): {"fetchedAt": payload.get("fetchedAt"), "subscription": payload["subscription"]}}
+  return {}
+
+
 def claude_subscription(profile: dict[str, Any], oauth: dict[str, Any], force: bool) -> dict[str, Any]:
   fallback = subscription_from_profile(profile, oauth)
   organization = organization_uuid()
@@ -242,34 +271,36 @@ def claude_subscription(profile: dict[str, Any], oauth: dict[str, Any], force: b
     return fallback
 
   account_key = hashlib.sha256(organization.encode()).hexdigest()[:16]
-  path = cache_path("claude-subscription.json")
-  if not force:
-    fresh = read_cache(path, CACHE_SECONDS)
-    value = fresh.get("subscription")
-    if fresh.get("accountKey") == account_key and isinstance(value, dict):
-      return value
+  cached = cached_subscriptions()
+  entry = cached.get(account_key) or {}
+  if not force and time.time() - float(entry.get("fetchedAt") or 0) <= CACHE_SECONDS:
+    if isinstance(entry.get("subscription"), dict):
+      return entry["subscription"]
 
-  cookie_name, cookie_value = claude_session_cookie()
-  if cookie_value:
+  # A profile signed in to a different Claude account answers 403/404 for this
+  # organization; move on to the next. Anything else means the network or the
+  # endpoint is having trouble, and the other profiles would fail the same way.
+  for cookie_name, cookie_value in claude_session_cookies():
     try:
       value = subscription_from_details(
         fetch_subscription_details(organization, cookie_name, cookie_value),
       )
-      if value.get("status") != "unknown":
-        # Cache only the derived display record. The browser session cookie and
-        # organization UUID never leave this process.
-        write_cache(path, {
-          "accountKey": account_key,
-          "fetchedAt": time.time(),
-          "subscription": value,
-        })
-        return value
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
-      pass
+    except urllib.error.HTTPError as error:
+      if error.code in (401, 403, 404):
+        continue
+      break
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+      break
+    if value.get("status") == "unknown":
+      continue
+    # Cache only the derived display record. The browser session cookie and
+    # organization UUID never leave this process.
+    cached[account_key] = {"fetchedAt": time.time(), "subscription": value}
+    write_cache(cache_path("claude-subscription.json"), {"accounts": cached})
+    return value
 
-  stale_entry = read_cache(path)
-  stale = stale_entry.get("subscription")
-  return stale if stale_entry.get("accountKey") == account_key and isinstance(stale, dict) else fallback
+  stale = entry.get("subscription")
+  return stale if isinstance(stale, dict) else fallback
 
 
 def main() -> int:

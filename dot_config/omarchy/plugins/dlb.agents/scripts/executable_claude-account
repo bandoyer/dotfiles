@@ -1,0 +1,482 @@
+#!/usr/bin/python3
+# omarchy:summary=Save, add, and switch between Claude Code accounts
+"""Switch Claude Code between saved subscription logins without logging out.
+
+Claude Code keeps its login in two places: the OAuth tokens in
+`<config>/.credentials.json` and the account metadata in the `oauthAccount`
+block of the global `.claude.json`. Switching swaps both, so history,
+settings, plugins, and projects stay shared between accounts.
+
+`claude auth logout` can revoke the refresh token it discards, which silently
+breaks any copy saved elsewhere. New accounts are therefore added through an
+isolated `CLAUDE_CONFIG_DIR` login that never touches the live one.
+
+Refresh tokens rotate, so before switching away the live tokens are written
+back to the slot of whichever account actually owns them. Ownership is checked
+against Anthropic's OAuth profile when the access token is still valid, and
+falls back to the saved `oauthAccount` block otherwise.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+PROFILE_ENDPOINT = "https://api.anthropic.com/api/oauth/profile"
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+
+
+# ----------------------------------------------------------------- locations
+
+def config_dir() -> Path:
+  return Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")).expanduser()
+
+
+def global_config_path() -> Path:
+  # Claude Code keeps .claude.json in $HOME unless CLAUDE_CONFIG_DIR moves
+  # everything, in which case it lives inside that directory.
+  if os.environ.get("CLAUDE_CONFIG_DIR"):
+    return config_dir() / ".claude.json"
+  return Path.home() / ".claude.json"
+
+
+def credentials_path() -> Path:
+  return config_dir() / ".credentials.json"
+
+
+def store_dir() -> Path:
+  root = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local/share"))
+  return root / "claude-accounts"
+
+
+def slot_dir(name: str) -> Path:
+  return store_dir() / "accounts" / name
+
+
+def active_marker() -> Path:
+  return store_dir() / "active"
+
+
+def order_file() -> Path:
+  return store_dir() / "order"
+
+
+# ----------------------------------------------------------------------- io
+
+def read_json(path: Path) -> dict[str, Any]:
+  try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    return value if isinstance(value, dict) else {}
+  except (OSError, json.JSONDecodeError):
+    return {}
+
+
+def write_private(path: Path, text: str) -> None:
+  """Atomically replace `path` with a 0600 file in the same directory."""
+  path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+  fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+      handle.write(text)
+    os.replace(temporary, path)
+  except BaseException:
+    Path(temporary).unlink(missing_ok=True)
+    raise
+
+
+def write_json(path: Path, payload: dict[str, Any], indent: int | None = 2) -> None:
+  write_private(path, json.dumps(payload, indent=indent) + "\n")
+
+
+def ensure_store() -> None:
+  for directory in (store_dir(), store_dir() / "accounts"):
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(directory, 0o700)
+
+
+# ------------------------------------------------------------------ identity
+
+def identity_of(account: dict[str, Any]) -> tuple[str, str]:
+  return (str(account.get("accountUuid") or ""), str(account.get("organizationUuid") or ""))
+
+
+def oauth_of(credentials: dict[str, Any]) -> dict[str, Any]:
+  oauth = credentials.get("claudeAiOauth")
+  return oauth if isinstance(oauth, dict) else {}
+
+
+def now_ms() -> int:
+  return int(time.time() * 1000)
+
+
+def verified_identity(credentials: dict[str, Any]) -> tuple[str, str] | None:
+  """Ask Anthropic who owns these tokens; None when it cannot say."""
+  oauth = oauth_of(credentials)
+  token = str(oauth.get("accessToken") or "")
+  if not token or int(oauth.get("expiresAt") or 0) <= now_ms() + 30_000:
+    return None
+  request = urllib.request.Request(
+    PROFILE_ENDPOINT,
+    headers={
+      "Authorization": "Bearer " + token,
+      "Accept": "application/json",
+      "User-Agent": "claude-account/1",
+    },
+  )
+  try:
+    with urllib.request.urlopen(request, timeout=8) as response:
+      payload = json.load(response)
+  except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+    return None
+  account = payload.get("account") if isinstance(payload, dict) else None
+  organization = payload.get("organization") if isinstance(payload, dict) else None
+  if not isinstance(account, dict) or not isinstance(organization, dict):
+    return None
+  return (str(account.get("uuid") or ""), str(organization.get("uuid") or ""))
+
+
+# --------------------------------------------------------------------- slots
+
+def slot_names() -> list[str]:
+  """Saved accounts in display order: the order file, then any stragglers."""
+  root = store_dir() / "accounts"
+  if not root.is_dir():
+    return []
+  present = sorted(p.name for p in root.iterdir() if (p / "credentials.json").is_file())
+  ordered = [name for name in read_order() if name in present]
+  return ordered + [name for name in present if name not in ordered]
+
+
+def read_order() -> list[str]:
+  try:
+    lines = order_file().read_text(encoding="utf-8").split()
+  except OSError:
+    return []
+  return list(dict.fromkeys(line for line in lines if NAME_PATTERN.match(line)))
+
+
+def write_order(names: list[str]) -> None:
+  ensure_store()
+  write_private(order_file(), "".join(name + "\n" for name in names))
+
+
+def load_slot(name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+  directory = slot_dir(name)
+  return read_json(directory / "credentials.json"), read_json(directory / "account.json")
+
+
+def save_slot(name: str, credentials: dict[str, Any], account: dict[str, Any]) -> None:
+  ensure_store()
+  directory = slot_dir(name)
+  directory.mkdir(exist_ok=True, mode=0o700)
+  os.chmod(directory, 0o700)
+  write_json(directory / "credentials.json", credentials, indent=None)
+  write_json(directory / "account.json", account)
+  # New accounts line up after the ones saved before them.
+  order = slot_names()
+  if read_order() != order:
+    write_order(order)
+
+
+def slot_for_identity(identity: tuple[str, str]) -> str:
+  if not identity[0]:
+    return ""
+  for name in slot_names():
+    if identity_of(load_slot(name)[1]) == identity:
+      return name
+  return ""
+
+
+def read_active_name() -> str:
+  try:
+    return active_marker().read_text(encoding="utf-8").strip()
+  except OSError:
+    return ""
+
+
+def validate_name(name: str) -> str:
+  if not NAME_PATTERN.match(name):
+    raise SystemExit(f"claude-account: invalid name {name!r} (letters, digits, '.', '_', '-')")
+  return name
+
+
+def plan_label(oauth: dict[str, Any]) -> str:
+  plan = str(oauth.get("subscriptionType") or "").strip()
+  tier = str(oauth.get("rateLimitTier") or "")
+  match = re.search(r"(\d+x)$", tier)
+  label = plan.capitalize() if plan else ""
+  if label and match:
+    label += " " + match.group(1)
+  return label
+
+
+# ---------------------------------------------------------------------- live
+
+def live_login() -> tuple[dict[str, Any], dict[str, Any]]:
+  credentials = read_json(credentials_path())
+  account = read_json(global_config_path()).get("oauthAccount")
+  return credentials, account if isinstance(account, dict) else {}
+
+
+def live_identity(credentials: dict[str, Any], account: dict[str, Any], verify: bool) -> tuple[str, str]:
+  if verify:
+    verified = verified_identity(credentials)
+    if verified and verified[0]:
+      return verified
+  return identity_of(account)
+
+
+def install_login(credentials: dict[str, Any], account: dict[str, Any]) -> None:
+  write_json(credentials_path(), credentials, indent=None)
+  config_path = global_config_path()
+  config = read_json(config_path)
+  if not config and config_path.exists():
+    raise SystemExit(f"claude-account: refusing to rewrite unreadable {config_path}")
+  config["oauthAccount"] = account
+  write_json(config_path, config)
+
+
+def capture_live(credentials: dict[str, Any], account: dict[str, Any]) -> str:
+  """Write the live (possibly rotated) tokens back to the slot that owns them."""
+  if not oauth_of(credentials):
+    return ""
+  identity = live_identity(credentials, account, verify=True)
+  name = slot_for_identity(identity)
+  if not name:
+    return ""
+  _, saved_account = load_slot(name)
+  # The live oauthAccount can lag behind the tokens if a running session
+  # rewrote .claude.json; only trust it when it names the same account.
+  fresh_account = account if identity_of(account) == identity else saved_account
+  save_slot(name, credentials, fresh_account)
+  return name
+
+
+# ------------------------------------------------------------------ commands
+
+def describe(name: str, live: tuple[str, str]) -> dict[str, Any]:
+  credentials, account = load_slot(name)
+  oauth = oauth_of(credentials)
+  refresh_expires = int(oauth.get("refreshTokenExpiresAt") or 0)
+  return {
+    "name": name,
+    "email": str(account.get("emailAddress") or ""),
+    "organization": str(account.get("organizationName") or ""),
+    "plan": plan_label(oauth),
+    "active": bool(live[0]) and identity_of(account) == live,
+    "expired": bool(refresh_expires) and refresh_expires <= now_ms(),
+  }
+
+
+def command_list(args: argparse.Namespace) -> int:
+  credentials, account = live_login()
+  live = identity_of(account) if oauth_of(credentials) else ("", "")
+  rows = [describe(name, live) for name in slot_names()]
+  if args.json:
+    print(json.dumps({"accounts": rows, "unsaved": bool(live[0]) and not any(r["active"] for r in rows)}))
+    return 0
+  if not rows:
+    print("No saved accounts. Save the current login with: claude-account save <name>")
+    return 0
+  width = max(len(r["name"]) for r in rows)
+  for row in rows:
+    marker = "*" if row["active"] else " "
+    notes = [row["email"], row["plan"]]
+    if row["expired"]:
+      notes.append("login expired: claude-account add " + row["name"])
+    print(f"{marker} {row['name']:<{width}}  " + "  ".join(n for n in notes if n))
+  if live[0] and not any(r["active"] for r in rows):
+    print("\nThe current login is not saved yet: claude-account save <name>")
+  return 0
+
+
+def command_current(args: argparse.Namespace) -> int:
+  credentials, account = live_login()
+  if not oauth_of(credentials):
+    print("logged out")
+    return 1
+  name = slot_for_identity(identity_of(account))
+  email = str(account.get("emailAddress") or "")
+  print(f"{name or '(unsaved)'}  {email}".rstrip())
+  return 0
+
+
+def command_save(args: argparse.Namespace) -> int:
+  name = validate_name(args.name)
+  credentials, account = live_login()
+  if not oauth_of(credentials):
+    raise SystemExit("claude-account: Claude Code is not logged in")
+  identity = live_identity(credentials, account, verify=True)
+  if identity != identity_of(account):
+    raise SystemExit("claude-account: the live tokens and .claude.json disagree about the account; "
+                     "restart Claude Code sessions and try again")
+  existing = slot_for_identity(identity)
+  if existing and existing != name:
+    raise SystemExit(f"claude-account: this login is already saved as {existing!r}")
+  if name in slot_names() and identity_of(load_slot(name)[1]) != identity and not args.force:
+    raise SystemExit(f"claude-account: {name!r} holds a different account (use --force to replace it)")
+  save_slot(name, credentials, account)
+  ensure_store()
+  write_private(active_marker(), name + "\n")
+  print(f"Saved the current login ({account.get('emailAddress', '')}) as {name!r}")
+  return 0
+
+
+def command_add(args: argparse.Namespace) -> int:
+  claude = shutil.which("claude")
+  if not claude:
+    raise SystemExit("claude-account: claude is not on PATH")
+  if args.name:
+    validate_name(args.name)
+  ensure_store()
+  with tempfile.TemporaryDirectory(dir=store_dir(), prefix=".login-") as scratch:
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=scratch)
+    command = [claude, "auth", "login", "--claudeai"]
+    if args.email:
+      command += ["--email", args.email]
+    if args.sso:
+      command.append("--sso")
+    if subprocess.run(command, env=env).returncode != 0:
+      raise SystemExit("claude-account: login did not complete")
+    credentials = read_json(Path(scratch) / ".credentials.json")
+    account = read_json(Path(scratch) / ".claude.json").get("oauthAccount")
+  if not oauth_of(credentials) or not isinstance(account, dict):
+    raise SystemExit("claude-account: login finished without a Claude subscription token")
+
+  identity = identity_of(account)
+  email = str(account.get("emailAddress") or "")
+  name = args.name or re.sub(r"[^A-Za-z0-9._-]+", "-", email.split("@")[0]).strip("-._") or "account"
+  validate_name(name)
+  existing = slot_for_identity(identity)
+  if existing:
+    name = existing
+  elif name in slot_names():
+    raise SystemExit(f"claude-account: {name!r} holds a different account; pick another name")
+  save_slot(name, credentials, account)
+  if existing:
+    print(f"Renewed the saved login for {name!r} ({email})")
+  else:
+    print(f"Saved {email} as {name!r}. Switch to it with: claude-account use {name}")
+  return 0
+
+
+def command_use(args: argparse.Namespace) -> int:
+  names = slot_names()
+  if not names:
+    raise SystemExit("claude-account: no saved accounts (claude-account save <name>)")
+
+  credentials, account = live_login()
+  current = capture_live(credentials, account)
+  if oauth_of(credentials) and not current and not args.force:
+    raise SystemExit("claude-account: the current login is not saved and would be lost; "
+                     "run `claude-account save <name>` first (or pass --force)")
+
+  target = args.name
+  if target in (None, "next"):
+    start = names.index(current) if current in names else -1
+    target = names[(start + 1) % len(names)]
+  if target not in names:
+    raise SystemExit(f"claude-account: no account named {target!r} (have: {', '.join(names)})")
+
+  target_credentials, target_account = load_slot(target)
+  if target != current:
+    install_login(target_credentials, target_account)
+  write_private(active_marker(), target + "\n")
+
+  email = str(target_account.get("emailAddress") or "")
+  sys.stdout.flush()
+  print(f"Claude Code now uses {target!r} ({email})" if target != current else f"Already using {target!r} ({email})")
+  refresh_expires = int(oauth_of(target_credentials).get("refreshTokenExpiresAt") or 0)
+  if refresh_expires and refresh_expires <= now_ms():
+    print(f"Its saved login has expired; renew it with: claude-account add {target}", file=sys.stderr)
+  if target != current and not args.quiet:
+    print("Sessions already running keep the account they started with; new ones use this one.")
+  if target != current and not args.no_refresh and shutil.which("omarchy-shell"):
+    subprocess.run(["omarchy-shell", "omarchy.agents", "refresh"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+  return 0
+
+
+def command_remove(args: argparse.Namespace) -> int:
+  name = validate_name(args.name)
+  if name not in slot_names():
+    raise SystemExit(f"claude-account: no account named {name!r}")
+  shutil.rmtree(slot_dir(name))
+  write_order(slot_names())
+  if read_active_name() == name:
+    active_marker().unlink(missing_ok=True)
+  print(f"Removed {name!r}. The live login, if it was this account, is untouched.")
+  return 0
+
+
+def command_order(args: argparse.Namespace) -> int:
+  names = slot_names()
+  if not args.names:
+    print(" ".join(names))
+    return 0
+  unknown = [name for name in args.names if name not in names]
+  if unknown:
+    raise SystemExit(f"claude-account: no account named {unknown[0]!r} (have: {', '.join(names)})")
+  first = list(dict.fromkeys(args.names))
+  write_order(first + [name for name in names if name not in first])
+  print("Order: " + " ".join(slot_names()))
+  return 0
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(prog="claude-account", description=__doc__.splitlines()[0])
+  commands = parser.add_subparsers(dest="command")
+
+  listing = commands.add_parser("list", aliases=["ls"], help="show saved accounts (* = active)")
+  listing.add_argument("--json", action="store_true")
+  listing.set_defaults(run=command_list)
+
+  current = commands.add_parser("current", help="print the active account")
+  current.set_defaults(run=command_current)
+
+  save = commands.add_parser("save", help="save the current login under a name")
+  save.add_argument("name")
+  save.add_argument("--force", action="store_true", help="replace a slot holding another account")
+  save.set_defaults(run=command_save)
+
+  add = commands.add_parser("add", aliases=["login"],
+                            help="log in to another account without logging out of this one")
+  add.add_argument("name", nargs="?", help="defaults to the email's local part")
+  add.add_argument("--email", help="pre-fill the login page")
+  add.add_argument("--sso", action="store_true", help="force the SSO login flow")
+  add.set_defaults(run=command_add)
+
+  use = commands.add_parser("use", aliases=["switch"], help="switch to a saved account (default: next)")
+  use.add_argument("name", nargs="?")
+  use.add_argument("--force", action="store_true", help="switch even if the live login is unsaved")
+  use.add_argument("--no-refresh", action="store_true", help="skip refreshing the Agents panel")
+  use.add_argument("--quiet", action="store_true")
+  use.set_defaults(run=command_use)
+
+  order = commands.add_parser("order", help="show or set the display and `use next` order")
+  order.add_argument("names", nargs="*", help="accounts to put first, left to right")
+  order.set_defaults(run=command_order)
+
+  remove = commands.add_parser("remove", aliases=["rm"], help="forget a saved account")
+  remove.add_argument("name")
+  remove.set_defaults(run=command_remove)
+
+  args = parser.parse_args()
+  if not getattr(args, "run", None):
+    args = parser.parse_args(["list"])
+  return args.run(args)
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())

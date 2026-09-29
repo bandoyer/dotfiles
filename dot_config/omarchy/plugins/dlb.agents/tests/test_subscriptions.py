@@ -61,6 +61,36 @@ class ClaudeSubscriptionTests(unittest.TestCase):
     self.assertEqual("2026-09-15T21:49:22Z", value["renewsAt"])
     self.assertFalse(value["cancelAtPeriodEnd"])
 
+  def test_profile_signed_in_to_another_account_is_skipped(self):
+    import os
+    import tempfile
+    import urllib.error
+    from unittest import mock
+
+    calls = []
+
+    def fetch(organization, cookie_name, cookie_value):
+      calls.append(cookie_value)
+      if cookie_value == "sk-ant-other-account":
+        raise urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+      return {"status": "active", "next_charge_at": "2026-10-04T15:56:55Z"}
+
+    with tempfile.TemporaryDirectory() as cache, \
+        mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache}), \
+        mock.patch.object(CLAUDE, "organization_uuid", return_value="org-main"), \
+        mock.patch.object(CLAUDE, "claude_session_cookies", return_value=[
+          ("sessionKey", "sk-ant-other-account"),
+          ("sessionKey", "sk-ant-this-account"),
+        ]), \
+        mock.patch.object(CLAUDE, "fetch_subscription_details", side_effect=fetch):
+      value = CLAUDE.claude_subscription({}, {}, force=True)
+      cached = CLAUDE.cached_subscriptions()
+
+    self.assertEqual(["sk-ant-other-account", "sk-ant-this-account"], calls)
+    self.assertEqual("2026-10-04T15:56:55Z", value["renewsAt"])
+    self.assertEqual("anthropic-subscription-details", value["source"])
+    self.assertEqual([value], [entry["subscription"] for entry in cached.values()])
+
   def test_active_max_does_not_treat_plan_creation_as_renewal(self):
     value = CLAUDE.subscription_from_profile(
       {

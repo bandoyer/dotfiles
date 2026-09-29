@@ -32,6 +32,17 @@ Panel {
 
   property bool cursorActive: false
 
+  // `p` swaps the dashboard for the provider switches; j/k walk them.
+  property bool managing: false
+  property int manageIndex: 0
+  readonly property var catalog: usage.providerCatalog
+
+  // Saved Claude Code logins, switchable from the Claude tab once there is
+  // more than one — or when the live login would be lost by switching.
+  readonly property var accounts: usage.claudeAccounts
+  readonly property bool showAccounts: !!provider && provider.providerId === "claude"
+    && (accounts.length > 1 || (usage.claudeLoginUnsaved && accounts.length > 0))
+
   // Countdowns and "updated" read this instead of Date.now() so the
   // panel keeps telling the truth while it sits open.
   property double nowMs: Date.now()
@@ -58,6 +69,44 @@ Panel {
 
   function refreshNow() {
     usage.refreshAll(true)
+  }
+
+  function setManaging(on) {
+    managing = on
+    manageIndex = 0
+    if (panelFlick) panelFlick.contentY = 0
+    if (on) usage.reloadCatalog()
+  }
+
+  function toggleProviderAt(index) {
+    var entry = catalog[index]
+    if (entry) usage.setProviderEnabled(entry.id, !entry.enabled)
+  }
+
+  function providerDescription(entry) {
+    var parts = [entry.source === "packaged" ? "Omarchy collector" : "Local collector"]
+    if (!entry.enabled) parts.push("Hidden")
+    else if (String(entry.status || "") !== "") parts.push(entry.status)
+    else parts.push(entry.ready ? "Signed in" : "No usage yet")
+    return parts.join(" · ")
+  }
+
+  function activeAccountIndex() {
+    for (var i = 0; i < accounts.length; i++)
+      if (accounts[i].active) return i
+    return -1
+  }
+
+  function cycleAccount() {
+    if (!showAccounts || accounts.length < 2) return
+    var next = (activeAccountIndex() + 1) % accounts.length
+    usage.switchClaudeAccount(accounts[next].name)
+  }
+
+  function accountTooltip(account) {
+    var parts = [account.email, account.plan]
+    if (account.expired) parts.push("login expired — claude-account add " + account.name)
+    return parts.filter(function(part) { return String(part || "") !== "" }).join(" · ")
   }
 
   function launchAgent() {
@@ -360,6 +409,9 @@ Panel {
   onProviderIndexChanged: if (panelFlick) panelFlick.contentY = 0
   onOpenedChanged: if (opened) {
     cursorActive = false
+    managing = false
+    usage.reloadAccounts()
+    usage.reloadCatalog()
     nowMs = Date.now()
     if (panelFlick) panelFlick.contentY = 0
     usage.refreshLimits()
@@ -389,6 +441,13 @@ Panel {
     function toggle(): void { root.toggle() }
     function refresh(): string { root.refreshNow(); return "ok" }
     function next(): string { root.selectProvider(root.providerIndex + 1); return "ok" }
+    function providers(): void { root.open(); root.setManaging(true) }
+    function reloadProviders(): string { usage.reloadCatalog(); return "ok" }
+    function account(name: string): string {
+      if (name === "" || name === "next") root.cycleAccount()
+      else usage.switchClaudeAccount(name)
+      return "ok"
+    }
   }
 
   BarIconButton {
@@ -421,6 +480,13 @@ Panel {
       anchors.fill: parent
 
       onMoveRequested: function(dx, dy) {
+        if (root.managing) {
+          if (dy !== 0 && root.catalog.length > 0) {
+            root.manageIndex = root.clamp(root.manageIndex + (root.cursorActive ? dy : 0), 0, root.catalog.length - 1)
+            root.cursorActive = true
+          }
+          return
+        }
         if (dx !== 0) {
           root.cursorActive = true
           root.selectProvider(root.providerIndex + dx)
@@ -429,10 +495,20 @@ Panel {
           panelFlick.contentY = root.clamp(panelFlick.contentY + dy * Style.space(56), 0,
                                            Math.max(0, panelFlick.contentHeight - panelFlick.height))
       }
-      onActivateRequested: root.refreshNow()
-      onCloseRequested: root.close()
+      onActivateRequested: {
+        if (root.managing) root.toggleProviderAt(root.manageIndex)
+        else root.refreshNow()
+      }
+      onCloseRequested: {
+        if (root.managing) root.setManaging(false)
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onTextKey: function(t) { if (t === "r" || t === "R") root.refreshNow() }
+      onTextKey: function(t) {
+        if (t === "r" || t === "R") root.refreshNow()
+        else if (t === "p" || t === "P") root.setManaging(!root.managing)
+        else if (t === "a" || t === "A") root.cycleAccount()
+      }
 
       Flickable {
         id: panelFlick
@@ -459,6 +535,16 @@ Panel {
             meta: root.heroMeta(root.provider)
             foreground: root.foreground
             fontFamily: root.fontFamily
+
+            trailingControl: Component {
+              PanelActionButton {
+                iconText: root.managing ? "󰕮" : "󰒓"
+                tooltipText: root.managing ? "Back to usage (p)" : "Providers (p)"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.setManaging(!root.managing)
+              }
+            }
 
             iconComponent: Component {
               Item {
@@ -500,6 +586,79 @@ Panel {
               }
             }
           }
+
+          // ---------- Providers (p) ----------
+          Column {
+            id: manageSection
+            visible: root.managing
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSeparator { foreground: root.foreground }
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "PROVIDERS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: root.catalog
+
+              Toggle {
+                required property var modelData
+                required property int index
+
+                width: parent.width
+                label: modelData.name
+                description: root.providerDescription(modelData)
+                checked: modelData.enabled
+                hasCursor: root.cursorActive && index === root.manageIndex
+                foreground: root.foreground
+                accent: Color.accent
+                fontFamily: root.fontFamily
+                titleSize: Style.font.body
+                onHovered: function(isHovered) {
+                  if (!isHovered) return
+                  root.cursorActive = true
+                  root.manageIndex = index
+                }
+                onClicked: {
+                  root.manageIndex = index
+                  root.toggleProviderAt(index)
+                }
+              }
+            }
+
+            Text {
+              visible: usage.providerToggleError !== ""
+              width: parent.width
+              text: usage.providerToggleError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              topPadding: Style.space(4)
+              text: "A hidden provider stops refreshing. New providers appear here when an omarchy-agent-usage-<id> collector lands in scripts/ or ships with Omarchy."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          // Everything below is the usage dashboard, swapped out while the
+          // provider switches are showing.
+          Column {
+            id: dashboard
+            visible: !root.managing
+            width: parent.width
+            spacing: column.spacing
 
           Text {
             visible: root.providers.length === 0
@@ -546,6 +705,67 @@ Panel {
                 }
                 onHovered: function(isHovered) { if (isHovered) root.cursorActive = true }
               }
+            }
+          }
+
+          // ---------- Claude account ----------
+          PanelSeparator {
+            visible: accountSection.visible
+            foreground: root.foreground
+          }
+
+          Column {
+            id: accountSection
+            visible: root.showAccounts
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "ACCOUNT"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              id: accountSwitch
+              width: parent.width
+              spacing: Style.spacing.md
+
+              readonly property real cellWidth: root.accounts.length > 0
+                ? (width - spacing * (root.accounts.length - 1)) / root.accounts.length
+                : 0
+
+              Repeater {
+                model: root.accounts
+
+                Button {
+                  required property var modelData
+
+                  width: accountSwitch.cellWidth
+                  text: usage.switchingAccount === modelData.name ? modelData.name + "…" : modelData.name
+                  tooltipText: root.accountTooltip(modelData)
+                  selected: modelData.active
+                  bordered: true
+                  foreground: modelData.expired ? root.urgent : root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  verticalPadding: Style.spacing.controlPaddingY
+                  onClicked: usage.switchClaudeAccount(modelData.name)
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: text !== ""
+              text: usage.accountError !== "" ? usage.accountError
+                : usage.claudeLoginUnsaved ? "This login isn't saved yet — run claude-account save <name> before switching."
+                : "a switches account · sessions already running keep theirs"
+              color: usage.accountError !== "" || usage.claudeLoginUnsaved ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -802,6 +1022,7 @@ Panel {
             font.pixelSize: Style.font.caption
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
+          }
           }
         }
       }
