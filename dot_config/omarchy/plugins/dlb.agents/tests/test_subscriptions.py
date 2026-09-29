@@ -91,6 +91,32 @@ class ClaudeSubscriptionTests(unittest.TestCase):
     self.assertEqual("anthropic-subscription-details", value["source"])
     self.assertEqual([value], [entry["subscription"] for entry in cached.values()])
 
+  def test_live_tier_replaces_stale_login_tier(self):
+    # The token said 5x at login; the account has since moved to 20x.
+    self.assertEqual("Max 20x", CLAUDE.current_tier_label(
+      "Max 5x", {"rateLimitTier": "default_claude_max_20x"}, {}))
+    self.assertEqual("Max 20x", CLAUDE.current_tier_label(
+      "Max 5x", {}, {"organizationRateLimitTier": "default_claude_max_20x"}))
+    self.assertEqual("Max 5x", CLAUDE.current_tier_label("Max 5x", {}, {}))
+    self.assertEqual("Pro", CLAUDE.current_tier_label(
+      "Pro", {"rateLimitTier": "default_claude_pro"}, {}))
+    self.assertEqual("", CLAUDE.current_tier_label(
+      "", {"rateLimitTier": "default_claude_max_20x"}, {}))
+
+  def test_profile_cache_is_not_shared_between_accounts(self):
+    import os
+    import tempfile
+    from unittest import mock
+
+    with tempfile.TemporaryDirectory() as cache, \
+        mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache}), \
+        mock.patch.object(CLAUDE, "fetch_profile", return_value={"rateLimitTier": "default_claude_max_5x"}):
+      with mock.patch.object(CLAUDE, "organization_uuid", return_value="org-alt"):
+        CLAUDE.cached_profile({"accessToken": "token"}, force=True)
+      with mock.patch.object(CLAUDE, "organization_uuid", return_value="org-main"), \
+          mock.patch.object(CLAUDE, "fetch_profile", side_effect=OSError("offline")):
+        self.assertEqual({}, CLAUDE.cached_profile({"accessToken": "token"}, force=False))
+
   def test_active_max_does_not_treat_plan_creation_as_renewal(self):
     value = CLAUDE.subscription_from_profile(
       {

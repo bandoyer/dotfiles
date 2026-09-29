@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -65,15 +66,18 @@ def fetch_profile(access_token: str) -> dict[str, Any]:
     "billingType": str(organization.get("billing_type") or ""),
     "organizationType": str(organization.get("organization_type") or ""),
     "subscriptionStatus": str(organization.get("subscription_status") or ""),
+    "rateLimitTier": str(organization.get("rate_limit_tier") or ""),
   }
 
 
 def cached_profile(oauth: dict[str, Any], force: bool) -> dict[str, Any]:
   path = cache_path("claude-subscription-profile.json")
+  # Keyed by account so a switch never shows the previous account's plan.
+  account_key = hashlib.sha256(organization_uuid().encode()).hexdigest()[:16]
   if not force:
     fresh = read_cache(path, CACHE_SECONDS)
     profile = fresh.get("profile")
-    if isinstance(profile, dict):
+    if fresh.get("accountKey") == account_key and isinstance(profile, dict):
       return profile
 
   token = str(oauth.get("accessToken") or "")
@@ -81,20 +85,37 @@ def cached_profile(oauth: dict[str, Any], force: bool) -> dict[str, Any]:
     try:
       profile = fetch_profile(token)
       if profile:
-        write_cache(path, {"fetchedAt": time.time(), "profile": profile})
+        write_cache(path, {"accountKey": account_key, "fetchedAt": time.time(), "profile": profile})
         return profile
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
       pass
 
   stale = read_cache(path)
   profile = stale.get("profile")
-  return profile if isinstance(profile, dict) else {}
+  return profile if stale.get("accountKey") == account_key and isinstance(profile, dict) else {}
+
+
+def oauth_account() -> dict[str, Any]:
+  account = read_json(Path.home() / ".claude.json").get("oauthAccount")
+  return account if isinstance(account, dict) else {}
 
 
 def organization_uuid() -> str:
-  config = read_json(Path.home() / ".claude.json")
-  account = config.get("oauthAccount") if isinstance(config.get("oauthAccount"), dict) else {}
-  return str(account.get("organizationUuid") or "")
+  return str(oauth_account().get("organizationUuid") or "")
+
+
+def current_tier_label(packaged: str, profile: dict[str, Any], account: dict[str, Any]) -> str:
+  """Prefer a live plan tier over the one recorded in the login token.
+
+  The packaged collector labels the plan from the token's rateLimitTier, a
+  snapshot from login that keeps saying "Max 5x" after an upgrade to 20x.
+  Anthropic's profile is live; Claude Code's refreshed account block is next.
+  """
+  if not packaged:
+    return packaged
+  tier = str(profile.get("rateLimitTier") or account.get("organizationRateLimitTier") or "")
+  match = re.search(r"max_(\d+x)", tier, re.IGNORECASE)
+  return "Max " + match.group(1) if match else packaged
 
 
 def browser_cookie_databases() -> list[tuple[Path, str]]:
@@ -309,6 +330,7 @@ def main() -> int:
   oauth = credentials()
   force = "--force" in args
   profile = cached_profile(oauth, force)
+  record["tierLabel"] = current_tier_label(str(record.get("tierLabel") or ""), profile, oauth_account())
   record["subscription"] = claude_subscription(profile, oauth, force)
   print(json.dumps(record, separators=(",", ":"), sort_keys=True))
   return 0
