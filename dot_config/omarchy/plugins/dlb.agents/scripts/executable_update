@@ -7,7 +7,6 @@ usage_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
 
 flags=()
 only=()
-local_agents=(claude codex grok)
 declare -A excluded
 
 while (( $# > 0 )); do
@@ -30,7 +29,7 @@ while (( $# > 0 )); do
   shift
 done
 
-local_wanted() {
+wanted() {
   local agent="$1" candidate
   [[ -n ${excluded[$agent]:-} ]] && return 1
   (( ${#only[@]} == 0 )) && return 0
@@ -40,11 +39,11 @@ local_wanted() {
   return 1
 }
 
-collect_local() {
-  local agent="$1" record tmp
+collect() {
+  local agent="$1" collector="$2" record tmp
   mkdir -p "$usage_dir"
   umask 077
-  if ! record=$("$script_dir/omarchy-agent-usage-$agent" "${flags[@]}") || [[ -z $record ]]; then
+  if ! record=$("$collector" "${flags[@]}" </dev/null) || [[ -z $record ]]; then
     echo "dlb.agents update: $agent collector failed" >&2
     return 1
   fi
@@ -57,10 +56,16 @@ collect_local() {
   mv "$tmp" "$usage_dir/$agent.json"
 }
 
+# Providers switched off in shell.json never run, whoever asked for the update.
+while IFS= read -r agent; do
+  [[ -n $agent ]] && excluded[$agent]=1
+done < <("$script_dir/providers" list --json | jq -r '.[] | select(.enabled | not) | .id')
+
+# Every discovered collector, this plugin's copies shadowing Omarchy's.
 status=0
-for agent in "${local_agents[@]}"; do
-  local_wanted "$agent" || continue
-  collect_local "$agent" || status=1
-done
+while IFS=$'\t' read -r agent _source collector; do
+  wanted "$agent" || continue
+  collect "$agent" "$collector" || status=1
+done < <("$script_dir/providers" discover)
 
 exit "$status"

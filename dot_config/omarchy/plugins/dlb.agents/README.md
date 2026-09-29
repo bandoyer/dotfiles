@@ -97,16 +97,20 @@ written by `omarchy-agent-usage-update`. That command runs one
 on its refresh timer and whenever you ask for a refresh, and picks up any
 record that lands in the directory regardless of who wrote it.
 
-This user-owned clone runs Claude, Codex, and Grok through the clone-local
-`scripts/update` wrapper. Omarchy's packaged Claude collector remains
+This user-owned clone runs every discovered collector through the clone-local
+`scripts/update` wrapper: its own `scripts/omarchy-agent-usage-<id>` copies
+(Claude, Codex, Grok) first, then any Omarchy ships that it does not shadow
+(currently Fireworks). Omarchy's packaged Claude collector remains
 authoritative for usage; a thin local wrapper adds subscription metadata. The
 local Codex copy changes its app-server approval policy from the removed
 `untrusted` value to the noninteractive `never` value required by Codex
 0.149+; the local Grok collector adds Grok usage and subscription data.
 
-Adding an agent therefore never touches this plugin: ship a collector that
-prints the record contract (see the `claude` and `codex` collectors in
-`bin/`), and the panel gains a tab. An `assets/<id>.svg` mark is optional —
+Adding an agent therefore never touches the QML: drop an executable
+`scripts/omarchy-agent-usage-<id>` that prints the record contract (see the
+`claude` and `codex` collectors in `/usr/share/omarchy/bin/`), and it shows up
+in `agent-providers list` and the panel's provider switches, then gains a tab
+once it reports data. An `assets/<id>.svg` mark is optional —
 with an `assets/<id>-light.svg` twin if the mark needs a dark variant for
 light surfaces — and the bar glyph stands in when there is none.
 
@@ -123,10 +127,16 @@ tokens, account IDs, email addresses, and other identity fields do not.
 
 Claude's billing endpoint does not accept Claude Code OAuth tokens. Its
 collector therefore reads only `sessionKeyV3` (or the older `sessionKey`) for
-`claude.ai` from the default Chromium/Chrome cookie database, decrypts it in
-memory through the desktop keyring, and uses it for that read-only request.
+`claude.ai` from each Chromium/Chrome profile (Default first), decrypts it in
+memory through the desktop keyring, and uses it for that read-only request. A
+profile signed in to a different Claude account answers 403/404 and the next
+profile is tried, so with two accounts, sign each in to claude.ai from its own
+browser profile and both get exact dates. Each account's derived record is
+cached separately, keyed by a hash of its organization.
 The cookie and keyring secret are never logged, cached, or written to a usage
-record. Override the browser locations with `CLAUDE_BROWSER_COOKIE_DB` and
+record. Decrypting it needs `python-cryptography` (`omarchy pkg add
+python-cryptography`); without it the collector logs a warning and the panel
+shows "Renewal date unavailable". Override the browser locations with `CLAUDE_BROWSER_COOKIE_DB` and
 `CLAUDE_BROWSER_SAFE_STORAGE_APP` when needed.
 
 Claude limits need a signed-in CLI; without credentials the panel says so and
@@ -137,8 +147,59 @@ falls back to local stats only. A non-default Claude directory is honored via
 
 - Bar icon: left = panel, right = launch agent, middle = next subscription.
 - Panel: `h`/`l` switch subscription, `j`/`k` scroll, `r` or Enter refresh,
-  Tab moves to the neighboring bar panel, Esc closes.
-- IPC: `omarchy-shell omarchy.agents <open|close|toggle|refresh|next>`.
+  `p` or the hero's gear shows the provider switches, `a` cycles the saved
+  Claude account (on the Claude tab), Tab moves to the neighboring bar panel,
+  Esc closes (or leaves the provider switches).
+- Provider switches: `j`/`k` move, Enter toggles, click toggles.
+- IPC: `omarchy-shell omarchy.agents <open|close|toggle|refresh|next|providers>`
+  and `omarchy-shell omarchy.agents account <name|next>`.
+
+## Providers
+
+`agent-providers` (a symlink to `scripts/providers`) lists every discovered
+collector and flips its `enabled` flag in this widget's `shell.json` entry.
+The panel's provider switches do the same thing.
+
+```bash
+agent-providers                     # on/off, id, local|packaged, last status
+agent-providers disable fireworks   # hide it and stop refreshing it
+agent-providers enable fireworks
+```
+
+A provider switched back on refreshes immediately. The bar icon hides itself
+when no provider has anything to show, so re-enable from the CLI if you turn
+them all off.
+
+## Claude accounts
+
+`claude-account` (a symlink to `scripts/claude-account`) keeps several Claude
+Code subscription logins and swaps between them without `claude auth logout`,
+which can revoke the refresh token being discarded. Each saved login lives in
+`~/.local/share/claude-accounts/accounts/<name>/` (0700 directory, 0600 files)
+and holds exactly what Claude Code keeps: `.credentials.json` and the
+`oauthAccount` block of `~/.claude.json`. History, settings, plugins, and
+projects stay shared.
+
+```bash
+claude-account save personal   # once: save the login you already have
+claude-account add work        # log in to the other account in an isolated
+                               # CLAUDE_CONFIG_DIR; the live login is untouched
+claude-account use work        # switch (no name = next account)
+claude-account                 # list; * marks the live one
+claude-account order main alt   # left-to-right order in the panel and for `use`
+claude-account remove work
+```
+
+Refresh tokens rotate, so `use` first writes the live tokens back to the slot
+of the account that owns them — checked against Anthropic's OAuth profile, or
+the saved `oauthAccount` when offline — and refuses to discard a login that is
+not saved. Sessions already running keep the account they started with; new
+sessions use the switched one. A saved login that sits unused past its refresh
+token lifetime shows as expired; `claude-account add <name>` renews it.
+
+With two or more saved accounts, the Claude tab shows an ACCOUNT row: click a
+name or press `a` to switch. The switch forces a Claude refresh, so the limits
+and plan follow the account.
 
 ## Settings
 
@@ -174,7 +235,8 @@ omarchy bar set omarchy.agents providers '{
 ```
 
 `enabled` defaults to `true` for every discovered agent; set it to `false` to
-hide a subscription that is installed. Disabled agents are also skipped when
+hide a subscription that is installed. `agent-providers` and the panel's
+provider switches write this object for you. Disabled agents are also skipped when
 the records regenerate.
 
 With `syncMode` on, every `*.json` snapshot in `syncDir` is merged, so today,
