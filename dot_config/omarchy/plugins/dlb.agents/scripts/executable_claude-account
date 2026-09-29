@@ -211,9 +211,11 @@ def validate_name(name: str) -> str:
   return name
 
 
-def plan_label(oauth: dict[str, Any]) -> str:
+def plan_label(oauth: dict[str, Any], account: dict[str, Any]) -> str:
   plan = str(oauth.get("subscriptionType") or "").strip()
-  tier = str(oauth.get("rateLimitTier") or "")
+  # The token's tier is a snapshot from login and goes stale after a plan
+  # change; Claude Code keeps the organization's tier in .claude.json current.
+  tier = str(account.get("organizationRateLimitTier") or oauth.get("rateLimitTier") or "")
   match = re.search(r"(\d+x)$", tier)
   label = plan.capitalize() if plan else ""
   if label and match:
@@ -273,7 +275,7 @@ def describe(name: str, live: tuple[str, str]) -> dict[str, Any]:
     "name": name,
     "email": str(account.get("emailAddress") or ""),
     "organization": str(account.get("organizationName") or ""),
-    "plan": plan_label(oauth),
+    "plan": plan_label(oauth, account),
     "active": bool(live[0]) and identity_of(account) == live,
     "expired": bool(refresh_expires) and refresh_expires <= now_ms(),
   }
