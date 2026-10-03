@@ -309,20 +309,33 @@ def rpc_request(proc: subprocess.Popen[str], request_id: int, method: str, param
     raise TimeoutError(method)
   proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}) + "\n")
   proc.stdin.flush()
+  # select() watches the raw pipe, so read it raw too: a buffered readline()
+  # can pull the reply in behind a notification and leave select() waiting
+  # on an empty pipe while the answer sits unread in Python's buffer.
+  fd = proc.stdout.fileno()
+  pending: bytes = getattr(proc, "rpc_pending", b"")
   deadline = time.monotonic() + timeout
-  while time.monotonic() < deadline:
-    ready, _, _ = select.select([proc.stdout], [], [], 0.25)
-    if not ready:
-      continue
-    line = proc.stdout.readline()
-    if not line:
-      break
-    try:
-      message = json.loads(line)
-    except json.JSONDecodeError:
-      continue
-    if isinstance(message, dict) and message.get("id") == request_id:
-      return message
+  try:
+    while True:
+      while b"\n" in pending:
+        line, pending = pending.split(b"\n", 1)
+        try:
+          message = json.loads(line)
+        except json.JSONDecodeError:
+          continue
+        if isinstance(message, dict) and message.get("id") == request_id:
+          return message
+      if time.monotonic() >= deadline:
+        break
+      ready, _, _ = select.select([fd], [], [], 0.25)
+      if not ready:
+        continue
+      chunk = os.read(fd, 65536)
+      if not chunk:
+        break
+      pending += chunk
+  finally:
+    setattr(proc, "rpc_pending", pending)
   raise TimeoutError(method)
 
 
