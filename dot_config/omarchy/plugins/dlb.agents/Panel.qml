@@ -214,7 +214,9 @@ Panel {
 
   function resetLabel(w) {
     var dateTime = formatResetDateTime(w)
-    if (dateTime === "") return ""
+    // An unused window has no reset time yet: Claude only starts the clock on
+    // the first prompt, so say that instead of leaving the line blank.
+    if (dateTime === "") return w && w.percent === 0 ? "Starts with your next prompt" : ""
     var remainingMs = resetMsFor(w)
     return "Resets " + dateTime
       + (remainingMs > 0 ? " · in " + formatDuration(remainingMs) : "")

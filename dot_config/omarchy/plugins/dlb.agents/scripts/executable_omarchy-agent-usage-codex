@@ -605,20 +605,33 @@ def rpc_request(proc, request_id, method, params=None, timeout=8):
   payload = {"id": request_id, "method": method, "params": params or {}}
   proc.stdin.write(json.dumps(payload) + "\n")
   proc.stdin.flush()
+  # select() watches the raw pipe, so read it raw too: a buffered readline()
+  # can pull the reply in behind a notification and leave select() waiting
+  # on an empty pipe while the answer sits unread in Python's buffer.
+  fd = proc.stdout.fileno()
+  pending = getattr(proc, "rpc_pending", b"")
   deadline = time.time() + timeout
-  while time.time() < deadline:
-    ready, _, _ = select.select([proc.stdout], [], [], 0.25)
-    if not ready:
-      continue
-    line = proc.stdout.readline()
-    if not line:
-      break
-    try:
-      message = json.loads(line)
-    except Exception:
-      continue
-    if message.get("id") == request_id:
-      return message
+  try:
+    while True:
+      while b"\n" in pending:
+        line, pending = pending.split(b"\n", 1)
+        try:
+          message = json.loads(line)
+        except Exception:
+          continue
+        if isinstance(message, dict) and message.get("id") == request_id:
+          return message
+      if time.time() >= deadline:
+        break
+      ready, _, _ = select.select([fd], [], [], 0.25)
+      if not ready:
+        continue
+      chunk = os.read(fd, 65536)
+      if not chunk:
+        break
+      pending += chunk
+  finally:
+    proc.rpc_pending = pending
   raise TimeoutError(method)
 
 
