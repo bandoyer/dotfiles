@@ -25,7 +25,7 @@ The current snapshot was last validated with Omarchy `4.0.4-1`.
 | Path | Contents |
 |---|---|
 | `dot_config/hypr/` | Hyprland and display overrides |
-| `dot_config/omarchy/` | Shell layout, hooks, extensions, and custom plugins |
+| `dot_config/omarchy/` | Shell layout, hooks, extensions, theme overrides, and custom plugins |
 | `dot_local/bin/` | Personal command-line helpers |
 | `dot_local/share/cmds/` | Searchable command recipes |
 | `packages/` | Arch and AUR recovery inventories; not applied by Chezmoi |
