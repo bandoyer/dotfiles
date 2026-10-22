@@ -43,6 +43,11 @@ last successful colors. It becomes `TURN LIGHTS ON` while dark and restores that
 saved pair when selected. Both directions are explicit combined hardware
 actions; they remain volatile and never save to device firmware.
 
+Because nothing is saved to firmware, a reboot turns the lights back on in
+their firmware default. The controller records the boot ID with each action.
+After a restart, the panel shows the lights as on and offers `TURN LIGHTS OFF`,
+which keeps the saved pair for the next `TURN LIGHTS ON`.
+
 Theme changes never turn darkened lights back on. While the lights are off, a
 new palette only replaces the saved resume pair. Duplicate and stale theme
 requests are ignored. Automatic failures are retained for the panel's
@@ -70,12 +75,14 @@ guarded command:
   profile for RAM changes;
 - serializes actions and refuses to run while the OpenRGB GUI is open;
 - performs one non-persistent Static action with no retry or firmware save;
-- records the last successful colors, saved resume colors, lights state, and
-  Sync/Individual preference in
+- records the last successful colors, saved resume colors, lights state, boot
+  ID, and Sync/Individual preference in
   `~/.local/state/openrgb-msi7e49/state.json`.
 
 The displayed colors are the last successfully applied or visually confirmed
 values, not a hardware readback. Changes made elsewhere can make them stale.
+After a reboot, the panel shows the saved pair while the hardware shows its
+firmware default, until the next Apply or lights-switch action.
 
 Safe checks that do not access hardware:
 

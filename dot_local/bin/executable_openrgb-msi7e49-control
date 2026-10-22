@@ -11,6 +11,7 @@ readonly lock_file="$HOME/.local/state/openrgb-msi7e49/control.lock"
 readonly theme_sync_file="$HOME/.local/state/openrgb-msi7e49/theme-sync.json"
 readonly theme_sync_lock_file="$HOME/.local/state/openrgb-msi7e49/theme-sync.lock"
 readonly last_log="$HOME/.local/state/openrgb-msi7e49/last-openrgb.log"
+readonly boot_id_file="/proc/sys/kernel/random/boot_id"
 readonly current_theme_name_file="$HOME/.local/state/omarchy/current/theme.name"
 readonly current_theme_colors_file="$HOME/.local/state/omarchy/current/theme/colors.toml"
 readonly current_background_link="$HOME/.local/state/omarchy/current/background"
@@ -38,6 +39,27 @@ validate_state() {
         and ((if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end) | type == "boolean")
         and ((if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end) | type == "boolean")
     ' "$state_file" >/dev/null || emit_error "RGB state file is invalid."
+}
+
+# Actions never save to firmware, so a reboot brings the lights back on in their
+# firmware default. State recorded during an earlier boot is read as lights on,
+# with the saved pair standing in for colors the controller cannot know.
+read_state() {
+    local boot_id
+    boot_id="$(<"$boot_id_file")"
+    jq -c --arg bootId "$boot_id" '
+        . + {
+            savedMotherboard: (.savedMotherboard // .motherboard),
+            savedRam: (.savedRam // .ram),
+            lightsOn: (if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end),
+            syncEnabled: (if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end)
+        }
+        | if .bootId == $bootId then
+            . + {rebooted: false}
+        else
+            . + {motherboard: .savedMotherboard, ram: .savedRam, lightsOn: true, rebooted: true}
+        end
+    ' "$state_file"
 }
 
 load_theme_sync() {
@@ -76,18 +98,13 @@ emit_state() {
     local theme_sync
     validate_state
     theme_sync="$(load_theme_sync)"
-    jq -c --arg message "$message" --argjson themeSync "$theme_sync" '
-        . as $state
-        | . + {
-            savedMotherboard: ($state.savedMotherboard // $state.motherboard),
-            savedRam: ($state.savedRam // $state.ram),
-            lightsOn: (if ($state | has("lightsOn")) then $state.lightsOn else (($state.motherboard != "000000") or ($state.ram != "000000")) end),
-            syncEnabled: (if ($state | has("syncEnabled")) then $state.syncEnabled else ($state.motherboard == $state.ram) end),
+    read_state | jq -c --arg message "$message" --argjson themeSync "$theme_sync" '
+        . + {
             themeSync: $themeSync,
             ok: true,
             message: $message
         }
-    ' "$state_file"
+    '
 }
 
 normalize_color() {
@@ -562,9 +579,11 @@ write_state() {
     local sync_enabled="$6"
     local last_action="$7"
     local updated_at
+    local boot_id
     local state_tmp
 
     updated_at="$(date --iso-8601=seconds)"
+    boot_id="$(<"$boot_id_file")"
     state_tmp="$(mktemp "${state_file}.tmp.XXXXXX")"
     jq -n \
         --arg motherboard "$motherboard" \
@@ -575,6 +594,7 @@ write_state() {
         --argjson syncEnabled "$sync_enabled" \
         --arg lastAction "$last_action" \
         --arg updatedAt "$updated_at" \
+        --arg bootId "$boot_id" \
         '{
             motherboard: $motherboard,
             ram: $ram,
@@ -584,6 +604,7 @@ write_state() {
             syncEnabled: $syncEnabled,
             lastAction: $lastAction,
             updatedAt: $updatedAt,
+            bootId: $bootId,
             source: "omarchy-plugin"
         }' \
         >"$state_tmp"
@@ -599,13 +620,15 @@ update_state() {
     local saved_motherboard
     local saved_ram
     local sync_enabled
+    local state
 
     validate_state
-    current_motherboard="$(jq -r '.motherboard' "$state_file")"
-    current_ram="$(jq -r '.ram' "$state_file")"
-    saved_motherboard="$(jq -r '.savedMotherboard // .motherboard' "$state_file")"
-    saved_ram="$(jq -r '.savedRam // .ram' "$state_file")"
-    sync_enabled="$(jq -r 'if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end' "$state_file")"
+    state="$(read_state)"
+    current_motherboard="$(jq -r '.motherboard' <<<"$state")"
+    current_ram="$(jq -r '.ram' <<<"$state")"
+    saved_motherboard="$(jq -r '.savedMotherboard' <<<"$state")"
+    saved_ram="$(jq -r '.savedRam' <<<"$state")"
+    sync_enabled="$(jq -r '.syncEnabled' <<<"$state")"
 
     case "$target" in
         motherboard)
@@ -733,6 +756,8 @@ apply_theme_sync() {
     local saved_motherboard
     local saved_ram
     local sync_enabled
+    local rebooted
+    local state
     local validation_output
     local validation_message
     local -a openrgb_args
@@ -785,12 +810,14 @@ apply_theme_sync() {
         emit_error "Another RGB action is already running. Theme sync did not retry."
     fi
 
-    lights_on="$(jq -r 'if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end' "$state_file")"
-    current_motherboard="$(jq -r '.motherboard' "$state_file")"
-    current_ram="$(jq -r '.ram' "$state_file")"
-    saved_motherboard="$(jq -r '.savedMotherboard // .motherboard' "$state_file")"
-    saved_ram="$(jq -r '.savedRam // .ram' "$state_file")"
-    sync_enabled="$(jq -r 'if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end' "$state_file")"
+    state="$(read_state)"
+    lights_on="$(jq -r '.lightsOn' <<<"$state")"
+    current_motherboard="$(jq -r '.motherboard' <<<"$state")"
+    current_ram="$(jq -r '.ram' <<<"$state")"
+    saved_motherboard="$(jq -r '.savedMotherboard' <<<"$state")"
+    saved_ram="$(jq -r '.savedRam' <<<"$state")"
+    sync_enabled="$(jq -r '.syncEnabled' <<<"$state")"
+    rebooted="$(jq -r '.rebooted' <<<"$state")"
 
     if [[ "$lights_on" == "false" ]]; then
         if [[ "$saved_motherboard" != "$RESOLVED_MOTHERBOARD" || "$saved_ram" != "$RESOLVED_RAM" ]]; then
@@ -804,7 +831,8 @@ apply_theme_sync() {
         return
     fi
 
-    if [[ "$current_motherboard" == "$RESOLVED_MOTHERBOARD" && "$current_ram" == "$RESOLVED_RAM" ]]; then
+    # After a reboot the lights show the firmware default, so they never match.
+    if [[ "$rebooted" == "false" && "$current_motherboard" == "$RESOLVED_MOTHERBOARD" && "$current_ram" == "$RESOLVED_RAM" ]]; then
         write_theme_sync true \
             "$RESOLVED_THEME" "$RESOLVED_MOTHERBOARD" "$RESOLVED_RAM" "$RESOLVED_MAPPING" \
             "applied" "The current lighting already matches this Omarchy theme." \
@@ -857,6 +885,7 @@ plan_power() {
     local ram
     local saved_motherboard
     local saved_ram
+    local state
     local no_op=false
 
     [[ "$direction" == "on" || "$direction" == "off" ]] \
@@ -866,9 +895,10 @@ plan_power() {
     validate_runtime
     validate_profile combined
 
-    lights_on="$(jq -r 'if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end' "$state_file")"
-    saved_motherboard="$(jq -r '.savedMotherboard // .motherboard' "$state_file")"
-    saved_ram="$(jq -r '.savedRam // .ram' "$state_file")"
+    state="$(read_state)"
+    lights_on="$(jq -r '.lightsOn' <<<"$state")"
+    saved_motherboard="$(jq -r '.savedMotherboard' <<<"$state")"
+    saved_ram="$(jq -r '.savedRam' <<<"$state")"
 
     if [[ "$direction" == "off" ]]; then
         motherboard="000000"
@@ -910,6 +940,7 @@ apply_power() {
     local saved_motherboard
     local saved_ram
     local sync_enabled
+    local state
     local -a openrgb_args
 
     [[ "$direction" == "on" || "$direction" == "off" ]] \
@@ -922,10 +953,11 @@ apply_power() {
     exec 9>"$lock_file"
     flock -n 9 || emit_error "Another RGB action is already running."
 
-    lights_on="$(jq -r 'if has("lightsOn") then .lightsOn else ((.motherboard != "000000") or (.ram != "000000")) end' "$state_file")"
-    saved_motherboard="$(jq -r '.savedMotherboard // .motherboard' "$state_file")"
-    saved_ram="$(jq -r '.savedRam // .ram' "$state_file")"
-    sync_enabled="$(jq -r 'if has("syncEnabled") then .syncEnabled else (.motherboard == .ram) end' "$state_file")"
+    state="$(read_state)"
+    lights_on="$(jq -r '.lightsOn' <<<"$state")"
+    saved_motherboard="$(jq -r '.savedMotherboard' <<<"$state")"
+    saved_ram="$(jq -r '.savedRam' <<<"$state")"
+    sync_enabled="$(jq -r '.syncEnabled' <<<"$state")"
 
     if [[ "$direction" == "off" && "$lights_on" == "false" ]]; then
         emit_state "Lights are already off; saved colors were preserved."
@@ -941,8 +973,8 @@ apply_power() {
     fi
 
     if [[ "$direction" == "off" ]]; then
-        saved_motherboard="$(jq -r '.motherboard' "$state_file")"
-        saved_ram="$(jq -r '.ram' "$state_file")"
+        saved_motherboard="$(jq -r '.motherboard' <<<"$state")"
+        saved_ram="$(jq -r '.ram' <<<"$state")"
         motherboard="000000"
         ram="000000"
     else
