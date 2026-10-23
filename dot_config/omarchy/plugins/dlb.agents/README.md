@@ -1,10 +1,10 @@
 # Agents
 
 This is a user-owned clone of Omarchy's Agents plugin with Grok Build usage,
-Codex 0.149+ app-server compatibility, subscription status and renewal dates,
-and exact local reset dates displayed in 12-hour time. It is based on
-[`basecamp/omarchy`](https://github.com/basecamp/omarchy), specifically
-`shell/plugins/agents`, and retains Omarchy's MIT license.
+Muse Code usage, Codex 0.149+ app-server compatibility, subscription status and
+renewal dates, and exact local reset dates displayed in 12-hour time. It is
+based on [`basecamp/omarchy`](https://github.com/basecamp/omarchy),
+specifically `shell/plugins/agents`, and retains Omarchy's MIT license.
 
 The repository contains no credentials, generated usage records, or personal
 screenshots. Grok credentials remain managed by the Grok CLI, and live usage
@@ -99,12 +99,14 @@ record that lands in the directory regardless of who wrote it.
 
 This user-owned clone runs every discovered collector through the clone-local
 `scripts/update` wrapper: its own `scripts/omarchy-agent-usage-<id>` copies
-(Claude, Codex, Grok) first, then any Omarchy ships that it does not shadow
-(currently Fireworks). Omarchy's packaged Claude collector remains
-authoritative for usage; a thin local wrapper adds subscription metadata. The
-local Codex copy changes its app-server approval policy from the removed
-`untrusted` value to the noninteractive `never` value required by Codex
-0.149+; the local Grok collector adds Grok usage and subscription data.
+(Claude, Codex, Grok, Muse) first, then any Omarchy ships that it does not
+shadow (currently Fireworks and Kimi). Omarchy's packaged Claude collector
+remains authoritative for usage; a thin local wrapper adds subscription
+metadata. The local Codex copy changes its app-server approval policy from the
+removed `untrusted` value to the noninteractive `never` value required by Codex
+0.149+; the local Grok collector adds Grok usage and subscription data. The
+local Muse collector adds Muse Code token stats; Omarchy ships no Muse
+collector.
 
 Adding an agent therefore never touches the QML: drop an executable
 `scripts/omarchy-agent-usage-<id>` that prints the record contract (see the
@@ -119,6 +121,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `claude` | Exact current period end, next charge, and scheduled cancellation from Anthropic's signed-in `/subscription_details` response; OAuth profile status is the fallback | Anthropic's OAuth usage endpoint (5-hour session + 7-day weekly) | `~/.claude/projects` transcripts, opencode sessions on an Anthropic provider, plus `stats-cache.json` and `history.jsonl` as fallback |
 | `codex` | Exact active/inactive state, current period end, and renewal flag from ChatGPT's signed-in `/backend-api/subscriptions` response | The Codex app-server RPC, launched read-only and noninteractively | native Codex CLI session files (plus pi and opencode sessions) |
 | `grok` | Exact active/inactive state, current period end, and cancellation flag from Grok's signed-in `/rest/subscriptions` response | Grok ACP `_x.ai/billing` over `grok agent stdio` | `~/.grok/sessions/*/*/updates.jsonl` completed-turn ledgers |
+| `muse` | Not collected yet; the panel says "Unavailable" | Not collected yet. Muse keeps no plan or limit figures on disk, and `muse serve`'s `usage/read` stays empty until that host makes a model call | `model_completed` events and `runtime.user_intent.accepted` prompt records in `~/.local/share/muse/sessions/YYYY/MM/DD/<session>/session.jsonl`, plus each `subagent/<id>/session.jsonl` |
 
 The subscription object in each generated record is account-local, just like
 rate limits and balances: it is never written into cross-device snapshots.
@@ -141,7 +144,7 @@ shows "Renewal date unavailable". Override the browser locations with `CLAUDE_BR
 
 Claude limits need a signed-in CLI; without credentials the panel says so and
 falls back to local stats only. A non-default Claude directory is honored via
-`CLAUDE_CONFIG_DIR`, Codex via `CODEX_HOME`.
+`CLAUDE_CONFIG_DIR`, Codex via `CODEX_HOME`, Muse via `XDG_DATA_HOME`.
 
 ## Interactions
 

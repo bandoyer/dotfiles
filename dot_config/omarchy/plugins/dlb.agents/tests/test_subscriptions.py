@@ -4,10 +4,13 @@ import base64
 import importlib.machinery
 import importlib.util
 import json
+import os
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +32,7 @@ def load_script(name: str):
 CLAUDE = load_script("omarchy-agent-usage-claude")
 CODEX = load_script("omarchy-agent-usage-codex")
 GROK = load_script("omarchy-agent-usage-grok")
+MUSE = load_script("omarchy-agent-usage-muse")
 
 
 def fake_jwt(payload: dict) -> str:
@@ -240,6 +244,102 @@ class GrokSubscriptionTests(unittest.TestCase):
       "subscriptions": [{"status": "SUBSCRIPTION_STATUS_INACTIVE"}]
     })
     self.assertEqual("inactive", value["status"])
+
+
+class MuseUsageTests(unittest.TestCase):
+  TODAY = "2026-10-19"
+
+  def stamp(self, hour: int) -> int:
+    return int(datetime(2026, 10, 19, hour).timestamp() * 1_000_000)
+
+  def line(self, record_id: str, hour: int, event: dict) -> str:
+    return json.dumps({
+      "id": record_id,
+      "recorded_at": self.stamp(hour),
+      "payload_type": "runtime.session",
+      "payload": {"kind": "run", "event": event},
+    })
+
+  def prompt(self, record_id: str, hour: int) -> str:
+    return json.dumps({
+      "id": record_id,
+      "recorded_at": self.stamp(hour),
+      "payload_type": "runtime.user_intent.accepted",
+      "payload": {},
+    })
+
+  def call(self, input_tokens: int, output_tokens: int, cached: int) -> dict:
+    return {
+      "kind": "model_completed",
+      "model": "muse-wonder-full-1.0",
+      "usage": {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_tokens": cached,
+        "cache_read_tokens": cached,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 3,
+      },
+    }
+
+  def scan(self, logs: dict[str, list[str]]) -> dict:
+    with tempfile.TemporaryDirectory() as data:
+      root = Path(data) / "muse" / "sessions" / "2026" / "10" / "19"
+      for relative, lines in logs.items():
+        path = root / relative / "session.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n")
+      with mock.patch.dict(os.environ, {"XDG_DATA_HOME": data}):
+        usage = MUSE.SessionUsage(today=self.TODAY)
+        MUSE.scan_sessions(usage)
+        return usage.stats()
+
+  def test_cached_tokens_are_split_out_of_input(self):
+    stats = self.scan({"root-a": [
+      self.prompt("p1", 9),
+      self.line("c1", 9, self.call(56776, 340, 55284)),
+    ]})
+    model = stats["modelUsage"]["muse-wonder-full-1.0"]
+    self.assertEqual(1492, model["inputTokens"])
+    self.assertEqual(340, model["outputTokens"])
+    self.assertEqual(55284, model["cacheReadInputTokens"])
+    self.assertEqual(56776 + 340, stats["todayTotalTokens"])
+    self.assertEqual(1, stats["todayPrompts"])
+
+  def test_subagent_calls_count_toward_the_root_session_but_not_as_prompts(self):
+    stats = self.scan({
+      "root-a": [
+        self.prompt("p1", 9),
+        self.line("c1", 9, self.call(100, 10, 0)),
+      ],
+      "root-a/subagent/sub-1": [
+        self.prompt("p2", 9),
+        self.line("c2", 9, self.call(200, 20, 0)),
+      ],
+    })
+    self.assertEqual(1, stats["totalPrompts"])
+    self.assertEqual(1, stats["totalSessions"])
+    self.assertEqual(330, stats["todayTotalTokens"])
+
+  def test_attribution_records_and_repeated_ids_are_not_counted_twice(self):
+    attribution = {"kind": "goal_usage_attribution", "usage_family": "provider",
+                   "usage": {"input_tokens": 100, "output_tokens": 10}}
+    stats = self.scan({
+      "root-a": [
+        self.line("c1", 9, self.call(100, 10, 0)),
+        self.line("g1", 9, attribution),
+      ],
+      "root-b": [self.line("c1", 9, self.call(100, 10, 0))],
+    })
+    self.assertEqual(110, stats["todayTotalTokens"])
+
+  def test_record_for_an_empty_home_is_not_ready(self):
+    with tempfile.TemporaryDirectory() as data, mock.patch.dict(os.environ, {"XDG_DATA_HOME": data}):
+      record = MUSE.scan()
+    self.assertEqual("muse", record["id"])
+    self.assertFalse(record["ready"])
+    self.assertEqual([], record["limits"])
+    self.assertEqual("unknown", record["subscription"]["status"])
 
 
 if __name__ == "__main__":

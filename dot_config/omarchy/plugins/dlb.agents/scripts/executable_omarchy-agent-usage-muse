@@ -1,0 +1,264 @@
+#!/usr/bin/python3
+# omarchy:summary=Print the Muse Code usage record as JSON
+# omarchy:args=[--force] [--limits-only]
+# omarchy:hidden=true
+"""Collect Muse Code usage into one display-ready JSON record.
+
+Token stats come from the session logs under ~/.local/share/muse/sessions.
+Muse keeps no plan or rate-limit figures on disk: its `usage/read` host
+method reports only what a running host has seen since its last model call,
+so this record carries local stats alone. The agents panel only ever reads
+the JSON this prints.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from subscription_utils import subscription
+
+AGENT_ID = "muse"
+AGENT_NAME = "Muse"
+AUTH_HELP = "Run `muse` and sign in to record usage."
+
+# One per prompt submitted to a session. Its count matches the prompt_count in
+# Muse's own session index; the user_prompt_display event is missing from
+# logs written by earlier Muse builds.
+PROMPT_RECORD = "runtime.user_intent.accepted"
+
+
+def number(value: Any) -> int:
+  try:
+    return int(value or 0)
+  except (TypeError, ValueError):
+    return 0
+
+
+def local_day(recorded_at: Any, fallback: float | None = None) -> str:
+  # Muse stamps every log line in epoch microseconds.
+  stamp = number(recorded_at)
+  if stamp > 0:
+    return datetime.fromtimestamp(stamp / 1_000_000).strftime("%Y-%m-%d")
+  if fallback is not None:
+    return datetime.fromtimestamp(fallback).strftime("%Y-%m-%d")
+  return datetime.now().strftime("%Y-%m-%d")
+
+
+def muse_home() -> Path:
+  data = os.environ.get("XDG_DATA_HOME")
+  return (Path(data) if data else Path.home() / ".local" / "share") / "muse"
+
+
+def sessions_root() -> Path:
+  return muse_home() / "sessions"
+
+
+def model_name(raw: Any) -> str:
+  return str(raw or "").strip() or "muse"
+
+
+# Muse counts cached tokens inside input_tokens (cached_tokens and
+# cache_read_tokens carry the same figure), so subtract the cache ones to keep
+# input and cache from doubling. Cache writes have always been 0 on disk and
+# get the same treatment, as in the Grok collector.
+def split_tokens(usage: dict[str, Any]) -> tuple[int, int, int, int]:
+  cache_read = max(number(usage.get("cache_read_tokens")), number(usage.get("cached_tokens")))
+  cache_creation = number(usage.get("cache_write_tokens"))
+  input_tokens = max(0, number(usage.get("input_tokens")) - cache_read - cache_creation)
+  output_tokens = number(usage.get("output_tokens"))
+  return input_tokens, output_tokens, cache_read, cache_creation
+
+
+class SessionUsage:
+  """The running totals every model call and prompt on disk add up to."""
+
+  def __init__(self, today: str | None = None):
+    self.today = today or datetime.now().strftime("%Y-%m-%d")
+    start = datetime.strptime(self.today, "%Y-%m-%d")
+    self.recent_dates = [(start - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1)]
+    self.recent = {day: 0 for day in self.recent_dates}
+    self.today_tokens_by_model: dict[str, int] = {}
+    self.model_usage: dict[str, dict[str, int]] = {}
+    self.today_sessions: set[str] = set()
+    self.today_prompts = 0
+    self.today_total_tokens = 0
+    self.total_prompts = 0
+    self.total_sessions: set[str] = set()
+    self.active_days: set[str] = set()
+    self.seen_records: set[str] = set()
+
+  def add_prompt(self, day: str, session_key: str) -> None:
+    self.total_prompts += 1
+    self.total_sessions.add(session_key)
+    self.active_days.add(day)
+    if day == self.today:
+      self.today_prompts += 1
+      self.today_sessions.add(session_key)
+
+  def add_call(self, day: str, session_key: str, model: str,
+               input_tokens: int, output_tokens: int, cache_read: int, cache_creation: int) -> None:
+    self.total_sessions.add(session_key)
+    self.active_days.add(day)
+
+    bucket = self.model_usage.setdefault(model, {
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+    })
+    bucket["inputTokens"] += input_tokens
+    bucket["outputTokens"] += output_tokens
+    bucket["cacheReadInputTokens"] += cache_read
+    bucket["cacheCreationInputTokens"] += cache_creation
+
+    total = input_tokens + output_tokens + cache_read + cache_creation
+    if day in self.recent:
+      self.recent[day] += total
+    if day == self.today:
+      self.today_tokens_by_model[model] = self.today_tokens_by_model.get(model, 0) + total
+      self.today_sessions.add(session_key)
+      self.today_total_tokens += total
+
+  def stats(self) -> dict[str, Any]:
+    return {
+      "todayPrompts": self.today_prompts,
+      "todaySessions": len(self.today_sessions),
+      "todayTotalTokens": self.today_total_tokens,
+      "todayTokensByModel": self.today_tokens_by_model,
+      "recentDays": [{"date": day, "messageCount": self.recent[day]} for day in self.recent_dates],
+      "totalPrompts": self.total_prompts,
+      "totalSessions": len(self.total_sessions),
+      # Days with any recorded usage, for the all-time "N days" summary. The
+      # dates travel too: merging snapshots from several machines needs their
+      # union, which a count alone cannot give.
+      "activeDays": len(self.active_days),
+      "activeDates": sorted(self.active_days),
+      "modelUsage": self.model_usage,
+    }
+
+
+def scan_log(usage: SessionUsage, path: Path, session_key: str, root_log: bool) -> None:
+  try:
+    fallback = path.stat().st_mtime
+  except OSError:
+    fallback = None
+
+  try:
+    with path.open(errors="replace") as handle:
+      for raw in handle:
+        # Model calls and prompts are a thin minority of a log that also
+        # carries every task, tool and reasoning record, so skip the rest
+        # before paying for a parse.
+        if '"model_completed"' not in raw and f'"{PROMPT_RECORD}"' not in raw:
+          continue
+        try:
+          entry = json.loads(raw)
+        except json.JSONDecodeError:
+          continue
+        payload = entry.get("payload") or {}
+        event = payload.get("event") if isinstance(payload, dict) else None
+        prompt = entry.get("payload_type") == PROMPT_RECORD
+        if not prompt and not (isinstance(event, dict) and event.get("kind") == "model_completed"):
+          continue
+
+        record_id = str(entry.get("id") or "")
+        if record_id:
+          if record_id in usage.seen_records:
+            continue
+          usage.seen_records.add(record_id)
+
+        day = local_day(entry.get("recorded_at"), fallback)
+        if prompt:
+          # A subagent's brief is the parent's work, not a prompt Dan typed.
+          if root_log:
+            usage.add_prompt(day, session_key)
+          continue
+
+        # Each model call reports its own usage, not a running total, so the
+        # calls sum. goal_usage_attribution records repeat the same counts and
+        # are never read.
+        tokens = event.get("usage")
+        if not isinstance(tokens, dict):
+          continue
+        input_tokens, output_tokens, cache_read, cache_creation = split_tokens(tokens)
+        if input_tokens or output_tokens or cache_read or cache_creation:
+          usage.add_call(day, session_key, model_name(event.get("model")),
+                         input_tokens, output_tokens, cache_read, cache_creation)
+  except OSError:
+    return
+
+
+def scan_sessions(usage: SessionUsage) -> None:
+  root = sessions_root()
+  if not root.is_dir():
+    return
+
+  # sessions/YYYY/MM/DD/<session uuid>/session.jsonl, with each subagent's
+  # log under <session uuid>/subagent/<id>/session.jsonl. Subagent calls are
+  # not folded into the parent log, so both count toward the root session.
+  for path in sorted(root.glob("*/*/*/*/**/session.jsonl")):
+    parts = path.relative_to(root).parts
+    session_key = parts[3]
+    scan_log(usage, path, session_key, root_log=len(parts) == 5)
+
+
+def scan() -> dict[str, Any]:
+  usage = SessionUsage()
+  scan_sessions(usage)
+  stats = usage.stats()
+
+  record = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "ready": stats["totalPrompts"] > 0 or bool(stats["modelUsage"]),
+    "hasLocalStats": True,
+    "tierLabel": "",
+    "limits": [],
+    "subscription": subscription("unknown", source="muse-local"),
+    "usageStatusText": "",
+    "authHelpText": AUTH_HELP,
+  }
+  record.update(stats)
+  return record
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Print the Muse Code usage record as JSON")
+  # Local logs are cheap and there is no network read to cache or skip. The
+  # flags exist so every collector accepts the same invocation.
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  parser.parse_args()
+
+  try:
+    record = scan()
+  except Exception as error:
+    record = {
+      "schemaVersion": 1,
+      "id": AGENT_ID,
+      "name": AGENT_NAME,
+      "updatedAt": datetime.now(timezone.utc).isoformat(),
+      "ready": False,
+      "hasLocalStats": False,
+      "tierLabel": "",
+      "limits": [],
+      "subscription": subscription("unknown", source="muse-error"),
+      "usageStatusText": "Muse unavailable",
+      "authHelpText": "Muse usage scan failed",
+    }
+    record.update(SessionUsage().stats())
+    print(f"omarchy-agent-usage-muse: {type(error).__name__}", file=sys.stderr)
+  print(json.dumps(record, separators=(",", ":")))
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
